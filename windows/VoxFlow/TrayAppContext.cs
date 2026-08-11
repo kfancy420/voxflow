@@ -39,7 +39,6 @@ public sealed class TrayAppContext : ApplicationContext
 
     private bool _busy;
     private DateTime _recordingStart;
-    private System.Windows.Forms.Timer? _historyExpiryTimer;
 
     public TrayAppContext()
     {
@@ -153,27 +152,23 @@ public sealed class TrayAppContext : ApplicationContext
         }
 
         EnsureAutoStart();
-        StartHistoryExpiry();
+        ApplyHistoryRetention();
         UpdateModelChecks();
         _ = _transcriber.LoadAsync(CurrentModel());
     }
 
     /// <summary>
-    /// Applies the retention setting and sweeps expired dictations. Pruning on
-    /// write alone is not enough: a machine that sits idle overnight would
-    /// still be holding yesterday's transcripts, so a timer keeps the promise
-    /// even when nothing is being dictated. The file is a few KB, so a short
-    /// interval costs nothing and bounds the overshoot to minutes.
+    /// Applies the retention setting and drops anything already expired.
+    /// Pruning is event-driven from here on — on startup, on each new
+    /// dictation, and when History is opened — so expired entries can outlive
+    /// the window on a machine that is left running and unused, until the next
+    /// of those happens.
     /// </summary>
-    private void StartHistoryExpiry()
+    private void ApplyHistoryRetention()
     {
         HistoryStore.RetentionHours = _settings.HistoryRetentionHours;
         Log.Info($"History retention: {DescribeRetention()}");
         HistoryStore.Prune();
-
-        _historyExpiryTimer = new System.Windows.Forms.Timer { Interval = 15 * 60 * 1000 };
-        _historyExpiryTimer.Tick += (_, _) => HistoryStore.Prune();
-        _historyExpiryTimer.Start();
     }
 
     private string DescribeRetention() =>
@@ -437,8 +432,6 @@ public sealed class TrayAppContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         Log.Info("Shutting down");
-        _historyExpiryTimer?.Stop();
-        _historyExpiryTimer?.Dispose();
         _hook.Dispose();
         _recorder.Dispose();
         _transcriber.Dispose();

@@ -143,9 +143,12 @@ public static class PersonalDictionary
 /// The age bound is the one that matters. Everything dictated goes through
 /// here in plaintext — messages, invoices, client details — so it should not
 /// accumulate on disk indefinitely just because the entry count stayed under
-/// a cap. Expiry is enforced on write, on read, at startup and on a periodic
-/// sweep, because a machine left idle overnight must not still be holding
-/// yesterday's dictations in the morning.
+/// a cap.
+///
+/// Expiry is event-driven: enforced at startup, on every write, and whenever
+/// the history is opened for reading. There is no background sweep, so on a
+/// machine left running and unused an expired entry survives on disk until
+/// one of those happens.
 /// </summary>
 public static class HistoryStore
 {

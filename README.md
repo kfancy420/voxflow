@@ -130,9 +130,10 @@ Every dictation is written to `%APPDATA%\VoxFlow\history.json` in plaintext.
 On Windows it **expires after 24 hours** by default, on top of the existing
 200-entry cap.
 
-Expiry is enforced on write, when History is opened from the tray, at startup,
-and by a 15-minute sweep — the sweep is the one that matters, since a machine
-left idle overnight would otherwise still be holding yesterday's transcripts.
+Expiry is event-driven: it runs at startup, on every new dictation, and when
+History is opened from the tray. There is no background sweep, so on a machine
+left running and unused an expired entry stays on disk until the next of those
+happens — in practice, until you next dictate or restart.
 
 Change it with `HistoryRetentionHours` in `%APPDATA%\VoxFlow\settings.json`;
 `0` disables time-based expiry and leaves only the count cap. **Clear History
