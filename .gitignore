@@ -1,9 +1,9 @@
 # Build outputs
 macos/.build/
 macos/build/
-windows/**/bin/
-windows/**/obj/
-windows/**/publish/
+**/bin/
+**/obj/
+**/publish/
 *.user
 
 # OS / editor
@@ -14,3 +14,8 @@ windows/**/publish/
 *.zip
 *.exe
 *.bin
+
+# Generated benchmark fixtures (regenerate with tools/model-bench/make-clips.ps1)
+tools/model-bench/clips/
+tools/model-bench/manifest.tsv
+*.wav

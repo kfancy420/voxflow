@@ -17,10 +17,15 @@ public sealed class AudioRecorder : IDisposable
     private readonly object _lock = new();
     public bool IsRecording { get; private set; }
 
+    private long _startTimestamp;
+    private bool _awaitingFirstBuffer;
+
     public void Start()
     {
         if (IsRecording) return;
         lock (_lock) { _samples.Clear(); }
+        _startTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        _awaitingFirstBuffer = true;
 
         _waveIn = new WaveInEvent
         {
@@ -54,6 +59,13 @@ public sealed class AudioRecorder : IDisposable
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
+        if (_awaitingFirstBuffer)
+        {
+            _awaitingFirstBuffer = false;
+            // How much speech would be lost if the user starts talking the
+            // instant they press the key.
+            Log.Info($"First audio buffer {KeyboardHook.MsSince(_startTimestamp):F1} ms after mic start");
+        }
         int count = e.BytesRecorded / 2;
         var chunk = new float[count];
         float sumSquares = 0f;

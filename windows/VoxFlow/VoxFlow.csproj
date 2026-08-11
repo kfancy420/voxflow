@@ -9,11 +9,63 @@
     <AssemblyName>VoxFlow</AssemblyName>
     <RootNamespace>VoxFlow</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!--
+      Whisper.net locates its native libraries at
+      <AppContext.BaseDirectory>\runtimes\<rid>\. For a single-file app
+      BaseDirectory is the directory holding the .exe, but
+      IncludeNativeLibrariesForSelfExtract=true unpacks natives into a
+      per-user temp folder instead — so the loader looked in a directory that
+      never contained them and every model load failed with
+      "Native Library not found in default paths."
+
+      Keeping the native libraries beside the .exe is what the loader expects.
+      Everything else (the .NET runtime, all managed assemblies) still bundles
+      into the single VoxFlow.exe.
+    -->
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="Whisper.net" Version="1.7.4" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.7.4" />
+    <!-- GPU backend. ~10 MB, and on this class of hardware it transcribes an
+         order of magnitude faster than the CPU build. Whisper.net falls back
+         to the CPU runtime automatically if Vulkan is unavailable. Note that
+         Whisper.net.Runtime.Cuda is deliberately NOT referenced: its 1.7.4
+         build fails to load on Blackwell (RTX 50-series) GPUs. -->
+    <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.7.4" />
   </ItemGroup>
+
+  <!-- The property above is easy to re-break from the command line, where
+       -p:IncludeNativeLibrariesForSelfExtract=true overrides the project file.
+       Fail loudly rather than shipping a build that cannot load Whisper. -->
+  <Target Name="GuardAgainstNativeSelfExtract" BeforeTargets="Publish"
+          Condition="'$(IncludeNativeLibrariesForSelfExtract)' == 'true'">
+    <Error Text="Do not publish with IncludeNativeLibrariesForSelfExtract=true. Whisper.net looks for its native libraries in AppContext.BaseDirectory\runtimes\&lt;rid&gt;\; self-extract unpacks them to a temp folder instead and every model load fails with 'Native Library not found in default paths.' Publish without that flag." />
+  </Target>
+
+  <!-- The Whisper.net runtime packages drop every platform they support into
+       runtimes\ regardless of the publish RID, so a win-x64 build carries
+       linux, macOS, x86 and arm64 binaries it can never load. Keep only
+       runtimes\win-x64 (CPU) and runtimes\vulkan\win-x64 (GPU). -->
+  <Target Name="TrimUnusedWhisperRuntimes" AfterTargets="Publish"
+          Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <ItemGroup>
+      <UnusedRuntimeDir Include="$(PublishDir)runtimes\win-x86" />
+      <UnusedRuntimeDir Include="$(PublishDir)runtimes\win-arm64" />
+      <UnusedRuntimeDir Include="$(PublishDir)runtimes\linux-x64" />
+      <UnusedRuntimeDir Include="$(PublishDir)runtimes\linux-arm" />
+      <UnusedRuntimeDir Include="$(PublishDir)runtimes\linux-arm64" />
+      <UnusedRuntimeDir Include="$(PublishDir)runtimes\macos-x64" />
+      <UnusedRuntimeDir Include="$(PublishDir)runtimes\macos-arm64" />
+      <UnusedRuntimeDir Include="$(PublishDir)runtimes\vulkan\linux-x64" />
+      <UnusedNative Include="%(UnusedRuntimeDir.Identity)\**\*" />
+    </ItemGroup>
+    <Delete Files="@(UnusedNative)" />
+    <RemoveDir Directories="@(UnusedRuntimeDir)" />
+  </Target>
 </Project>

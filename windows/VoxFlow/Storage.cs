@@ -12,7 +12,11 @@ public sealed class Settings
 {
     public bool CleanupEnabled { get; set; } = true;
     public bool TrailingSpace { get; set; } = true;
-    public string Model { get; set; } = "small.en";
+    /// <summary>
+    /// medium.en: on a GPU-accelerated machine the extra ~100 ms is
+    /// imperceptible and it is measurably better on technical vocabulary.
+    /// </summary>
+    public string Model { get; set; } = "medium.en";
     /// <summary>True once we've auto-enabled start-with-Windows on first run.</summary>
     public bool AutoStartConfigured { get; set; } = false;
 
@@ -61,9 +65,15 @@ public static class PersonalDictionary
     public static void EnsureExists()
     {
         if (File.Exists(FilePath)) return;
+        // Whisper has no idea "VoxFlow" is a word, so it guesses at the sounds
+        // and lands on things like "box flow" or "Vox Flow". Seed the common
+        // mishearings — this is exactly what the dictionary is for.
         var sample = new Dictionary<string, string>
         {
-            ["voxflow"] = "VoxFlow"
+            ["voxflow"] = "VoxFlow",
+            ["vox flow"] = "VoxFlow",
+            ["box flow"] = "VoxFlow",
+            ["fox flow"] = "VoxFlow",
         };
         try
         {
