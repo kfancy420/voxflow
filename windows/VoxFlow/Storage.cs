@@ -20,6 +20,13 @@ public sealed class Settings
     /// <summary>True once we've auto-enabled start-with-Windows on first run.</summary>
     public bool AutoStartConfigured { get; set; } = false;
 
+    /// <summary>
+    /// How long dictation history is kept, in hours. Everything dictated is
+    /// stored in plaintext, so it expires by default rather than accumulating.
+    /// Set to 0 to keep entries until the 200-entry cap evicts them.
+    /// </summary>
+    public int HistoryRetentionHours { get; set; } = 24;
+
     private static string FilePath =>
         Path.Combine(AppDataDirectory(), "settings.json");
 
@@ -36,18 +43,34 @@ public sealed class Settings
         try
         {
             if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<Settings>(File.ReadAllText(FilePath)) ?? new Settings();
+            {
+                string json = File.ReadAllText(FilePath);
+                var loaded = JsonSerializer.Deserialize<Settings>(json) ?? new Settings();
+
+                // A settings file written by an older build is missing any key
+                // added since. Those keys then only exist as C# defaults, so
+                // the user cannot discover or edit them. Write the normalised
+                // form back so the file always documents every option.
+                if (JsonSerializer.Serialize(loaded, WriteOptions).Trim() != json.Trim())
+                    loaded.Save();
+
+                return loaded;
+            }
         }
         catch { }
-        return new Settings();
+
+        var fresh = new Settings();
+        fresh.Save();
+        return fresh;
     }
+
+    private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
     public void Save()
     {
         try
         {
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this,
-                new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, WriteOptions));
         }
         catch { }
     }
@@ -113,29 +136,136 @@ public static class PersonalDictionary
     }
 }
 
-/// <summary>History of dictations, newest first, capped at 200.</summary>
+/// <summary>
+/// History of dictations, newest first. Bounded two ways: by age
+/// (<see cref="RetentionHours"/>, 24 h by default) and by count (200).
+///
+/// The age bound is the one that matters. Everything dictated goes through
+/// here in plaintext — messages, invoices, client details — so it should not
+/// accumulate on disk indefinitely just because the entry count stayed under
+/// a cap. Expiry is enforced on write, on read, at startup and on a periodic
+/// sweep, because a machine left idle overnight must not still be holding
+/// yesterday's dictations in the morning.
+/// </summary>
 public static class HistoryStore
 {
     private sealed record Entry(DateTime Date, string Raw, string Cleaned, string? App);
 
+    private const int MaxEntries = 200;
+
+    /// <summary>
+    /// Hours to keep dictations for. Zero or less disables time-based expiry
+    /// and falls back to the count cap alone.
+    /// </summary>
+    public static int RetentionHours { get; set; } = 24;
+
+    private static readonly object Gate = new();
+
+    private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
+
     private static string FilePath =>
         Path.Combine(Settings.AppDataDirectory(), "history.json");
 
-    public static string PathForViewing() => FilePath;
+    /// <summary>Path for the tray's "Open History" — pruned first, so what
+    /// the user reads is never staler than the retention policy claims.</summary>
+    public static string PathForViewing()
+    {
+        Prune();
+        return FilePath;
+    }
 
     public static void Add(string raw, string cleaned, string? app)
     {
         if (string.IsNullOrWhiteSpace(cleaned)) return;
-        try
+        lock (Gate)
         {
-            List<Entry> entries = new();
-            if (File.Exists(FilePath))
-                entries = JsonSerializer.Deserialize<List<Entry>>(File.ReadAllText(FilePath)) ?? new();
-            entries.Insert(0, new Entry(DateTime.Now, raw, cleaned, app));
-            if (entries.Count > 200) entries.RemoveRange(200, entries.Count - 200);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(entries,
-                new JsonSerializerOptions { WriteIndented = true }));
+            try
+            {
+                var entries = Load();
+                entries.Insert(0, new Entry(DateTime.Now, raw, cleaned, app));
+                Save(Trim(entries));
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("Could not append to history: " + ex.Message);
+            }
         }
-        catch { }
+    }
+
+    /// <summary>Drops expired entries. Returns how many were removed.</summary>
+    public static int Prune()
+    {
+        lock (Gate)
+        {
+            try
+            {
+                if (!File.Exists(FilePath)) return 0;
+                var entries = Load();
+                int before = entries.Count;
+                var kept = Trim(entries);
+                if (kept.Count == before) return 0;
+                Save(kept);
+                Log.Info($"History pruned: {before - kept.Count} expired, {kept.Count} kept " +
+                         $"(retention {RetentionHours} h)");
+                return before - kept.Count;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("History prune failed: " + ex.Message);
+                return 0;
+            }
+        }
+    }
+
+    /// <summary>Deletes the history file outright.</summary>
+    public static void Clear()
+    {
+        lock (Gate)
+        {
+            try
+            {
+                if (File.Exists(FilePath)) File.Delete(FilePath);
+                Log.Info("History cleared");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("Could not clear history: " + ex.Message);
+            }
+        }
+    }
+
+    /// <summary>Number of entries currently retained (after pruning).</summary>
+    public static int Count()
+    {
+        Prune();
+        lock (Gate)
+        {
+            try { return Load().Count; }
+            catch { return 0; }
+        }
+    }
+
+    private static List<Entry> Load()
+    {
+        if (!File.Exists(FilePath)) return new List<Entry>();
+        return JsonSerializer.Deserialize<List<Entry>>(File.ReadAllText(FilePath)) ?? new List<Entry>();
+    }
+
+    private static void Save(List<Entry> entries) =>
+        File.WriteAllText(FilePath, JsonSerializer.Serialize(entries, WriteOptions));
+
+    private static List<Entry> Trim(List<Entry> entries)
+    {
+        if (RetentionHours > 0)
+        {
+            var cutoff = DateTime.Now - TimeSpan.FromHours(RetentionHours);
+            // Entries are written with a local timestamp and round-trip through
+            // JSON with an offset, so Kind is Local; compare directly rather
+            // than via ToLocalTime, which would misread an Unspecified Kind.
+            entries = entries.Where(e => e.Date >= cutoff).ToList();
+        }
+        if (entries.Count > MaxEntries)
+            entries.RemoveRange(MaxEntries, entries.Count - MaxEntries);
+        return entries;
     }
 }

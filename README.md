@@ -124,6 +124,24 @@ What does survive scrutiny:
 Default is `medium.en`; switch from the tray menu, which marks which models
 are already on disk and downloads on demand.
 
+### History retention
+
+Every dictation is written to `%APPDATA%\VoxFlow\history.json` in plaintext.
+On Windows it **expires after 24 hours** by default, on top of the existing
+200-entry cap.
+
+Expiry is enforced on write, when History is opened from the tray, at startup,
+and by a 15-minute sweep — the sweep is the one that matters, since a machine
+left idle overnight would otherwise still be holding yesterday's transcripts.
+
+Change it with `HistoryRetentionHours` in `%APPDATA%\VoxFlow\settings.json`;
+`0` disables time-based expiry and leaves only the count cap. **Clear History
+Now** in the tray menu deletes the file immediately.
+
+> The macOS build does not currently expire history — `HistoryStore.swift`
+> enforces `capacity = 200` and nothing else. The two platforms are not yet at
+> parity on this.
+
 ### Troubleshooting
 
 VoxFlow writes a log to `%APPDATA%\VoxFlow\voxflow.log` (also reachable via

@@ -39,6 +39,7 @@ public sealed class TrayAppContext : ApplicationContext
 
     private bool _busy;
     private DateTime _recordingStart;
+    private System.Windows.Forms.Timer? _historyExpiryTimer;
 
     public TrayAppContext()
     {
@@ -70,6 +71,17 @@ public sealed class TrayAppContext : ApplicationContext
         var historyItem = new ToolStripMenuItem("Open History…");
         historyItem.Click += (_, _) => OpenInNotepad(HistoryStore.PathForViewing());
 
+        var clearHistoryItem = new ToolStripMenuItem("Clear History Now");
+        clearHistoryItem.Click += (_, _) =>
+        {
+            int count = HistoryStore.Count();
+            var answer = MessageBox.Show(
+                $"Delete all {count} stored dictation(s)?\n\n" +
+                $"History expires automatically after {DescribeRetention()}.",
+                "VoxFlow", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
+            if (answer == DialogResult.OK) HistoryStore.Clear();
+        };
+
         var logItem = new ToolStripMenuItem("Open Log…");
         logItem.Click += (_, _) => OpenInNotepad(Log.Path);
 
@@ -88,6 +100,7 @@ public sealed class TrayAppContext : ApplicationContext
         menu.Items.Add(modelMenu);
         menu.Items.Add(dictItem);
         menu.Items.Add(historyItem);
+        menu.Items.Add(clearHistoryItem);
         menu.Items.Add(logItem);
         menu.Items.Add(rehookItem);
         menu.Items.Add(_startupItem);
@@ -140,9 +153,35 @@ public sealed class TrayAppContext : ApplicationContext
         }
 
         EnsureAutoStart();
+        StartHistoryExpiry();
         UpdateModelChecks();
         _ = _transcriber.LoadAsync(CurrentModel());
     }
+
+    /// <summary>
+    /// Applies the retention setting and sweeps expired dictations. Pruning on
+    /// write alone is not enough: a machine that sits idle overnight would
+    /// still be holding yesterday's transcripts, so a timer keeps the promise
+    /// even when nothing is being dictated. The file is a few KB, so a short
+    /// interval costs nothing and bounds the overshoot to minutes.
+    /// </summary>
+    private void StartHistoryExpiry()
+    {
+        HistoryStore.RetentionHours = _settings.HistoryRetentionHours;
+        Log.Info($"History retention: {DescribeRetention()}");
+        HistoryStore.Prune();
+
+        _historyExpiryTimer = new System.Windows.Forms.Timer { Interval = 15 * 60 * 1000 };
+        _historyExpiryTimer.Tick += (_, _) => HistoryStore.Prune();
+        _historyExpiryTimer.Start();
+    }
+
+    private string DescribeRetention() =>
+        _settings.HistoryRetentionHours <= 0
+            ? "no time limit (200-entry cap only)"
+            : _settings.HistoryRetentionHours == 24
+                ? "24 hours"
+                : $"{_settings.HistoryRetentionHours} hours";
 
     /// <summary>
     /// First run registers start-with-Windows. On later runs we only correct a
@@ -398,6 +437,8 @@ public sealed class TrayAppContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         Log.Info("Shutting down");
+        _historyExpiryTimer?.Stop();
+        _historyExpiryTimer?.Dispose();
         _hook.Dispose();
         _recorder.Dispose();
         _transcriber.Dispose();
