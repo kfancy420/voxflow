@@ -1,0 +1,16 @@
+# Build outputs
+macos/.build/
+macos/build/
+windows/**/bin/
+windows/**/obj/
+windows/**/publish/
+*.user
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Large binaries live in Releases, not the repo
+*.zip
+*.exe
+*.bin
