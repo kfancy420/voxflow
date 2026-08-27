@@ -59,13 +59,18 @@ public static class RunOnSplitter
 
     private static readonly HashSet<string> Openers = new(StringComparer.OrdinalIgnoreCase)
     {
-        "also", "anyway", "anyways", "honestly", "basically", "again", "secondly", "thirdly",
+        "also", "anyway", "anyways", "honestly", "secondly", "thirdly",
         "additionally", "furthermore", "however", "therefore", "otherwise", "meanwhile",
     };
+    // "I also think", "which also means", "it's honestly fine": mid-sentence.
     private static readonly HashSet<string> NoBreakBeforeOpener = new(StringComparer.OrdinalIgnoreCase)
     {
-        "and", "but", "or", "is", "was", "it's", "that's", "so", "then", "quite", "very", "not",
-        "do", "did", "does", "can", "will", "would", "should", "could", "to", "of", "once", "over",
+        "and", "but", "or", "is", "was", "are", "were", "am", "be", "been", "being", "it's",
+        "that's", "so", "then", "quite", "very", "not", "do", "did", "does", "can", "will",
+        "would", "should", "could", "may", "might", "must", "has", "have", "had", "to", "of",
+        "once", "over", "i", "you", "we", "they", "he", "she", "it", "that", "this", "which",
+        "who", "there", "here", "what", "i'm", "you're", "we're", "they're", "i've", "we've",
+        "i'll", "we'll", "i'd", "we'd", "he's", "she's", "there's",
     };
 
     private static readonly HashSet<string> QuestionWords = new(StringComparer.OrdinalIgnoreCase)

@@ -38,6 +38,12 @@ internal static class SelfTest
                 case "--selftest-mic":
                     exitCode = RecordMic(args.Length > 1 ? double.Parse(args[1]) : 3.0, report);
                     break;
+                case "--selftest-clean":
+                    // Runs the cleanup pipeline on a text file: punctuation
+                    // rules can be tuned against real transcripts offline.
+                    report.AppendLine("MODE --selftest-clean " + args[1]);
+                    report.AppendLine("CLEANED : " + TextCleaner.Clean(File.ReadAllText(args[1])));
+                    break;
                 case "--selftest-insert":
                     exitCode = InsertText(args.Length > 1 ? args[1] : "VoxFlow insertion test", report);
                     break;

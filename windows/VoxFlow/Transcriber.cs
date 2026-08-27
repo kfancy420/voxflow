@@ -435,7 +435,7 @@ public sealed class Transcriber : IDisposable
     /// </summary>
     private sealed class PausePunctuator
     {
-        private const long PeriodGapCs = 70;  // ≥ 700 ms of silence before a word
+        private const long PeriodGapCs = 100; // ≥ 1 s of silence: hesitations run 700 ms+
         private static readonly bool DebugGaps =
             Environment.GetEnvironmentVariable("VOXFLOW_DEBUG_GAPS") == "1";
 
