@@ -29,6 +29,7 @@ public static class TextCleaner
         text = Regex.Replace(text, @"[ \t]+([,.!?;:])", "$1");
         text = Regex.Replace(text, @"([,!?;:])(?=[A-Za-z0-9])", "$1 ");
         text = Regex.Replace(text, @"(?<=[A-Za-z]{2})\.(?=[A-Za-z])", ". ");
+        text = RunOnSplitter.Split(text);
         text = CapitalizeSentences(text);
         text = EnsureTerminalPunctuation(text);
         return text;

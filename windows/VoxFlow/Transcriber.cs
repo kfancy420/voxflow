@@ -74,6 +74,10 @@ public sealed class Transcriber : IDisposable
     /// </summary>
     private static int ThreadCount => Math.Clamp(Environment.ProcessorCount / 2, 4, 16);
 
+    private const string PunctuationPrompt =
+        "Okay, so here's the thing. I looked at it again, and honestly, it's not right. " +
+        "First, the menu doesn't work. Second, it's slow. Can you fix that? Thanks.";
+
     private static bool _runtimeOrderSet;
 
     /// <summary>
@@ -169,6 +173,14 @@ public sealed class Transcriber : IDisposable
             _processor = _factory.CreateBuilder()
                 .WithLanguage("en")
                 .WithThreads(ThreadCount)
+                // Whisper mirrors the style of whatever text precedes the
+                // audio. A punctuated, conversational prompt makes it keep
+                // emitting commas and full stops on fast, run-on speech, where
+                // it otherwise drops them entirely.
+                .WithPrompt(PunctuationPrompt)
+                // Per-word timing: pauses between words are how sentence
+                // boundaries are recovered when whisper drops punctuation.
+                .WithTokenTimestamps()
                 // Each dictation is independent, so carrying decoder context
                 // between them only costs time and invites cross-contamination.
                 .WithNoContext()
@@ -382,14 +394,14 @@ public sealed class Transcriber : IDisposable
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var work = Task.Run(async () =>
             {
-                var sb = new StringBuilder();
+                var punctuator = new PausePunctuator();
                 int segments = 0;
                 await foreach (var segment in processor.ProcessAsync(samples))
                 {
                     segments++;
-                    sb.Append(segment.Text);
+                    punctuator.AddSegment(segment);
                 }
-                return (sb.ToString(), segments);
+                return (punctuator.Finish(), segments);
             });
 
             if (await Task.WhenAny(work, Task.Delay(budget)) != work)
@@ -407,6 +419,92 @@ public sealed class Transcriber : IDisposable
         finally
         {
             if (!hung) _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds the transcript from whisper's tokens, restoring the sentence
+    /// breaks whisper drops on fast speech. Two signals: (1) a long pause
+    /// before a word — people breathe at sentence ends even when talking
+    /// fast; (2) whisper starts every new segment capitalised, which on an
+    /// unpunctuated predecessor means a sentence ended there. Whisper's own
+    /// punctuation is always kept; nothing is inserted next to it. Word
+    /// timestamps are noisy by up to ~400 ms on words with no pause at all,
+    /// so the pause threshold is deliberately high and commas are never
+    /// inferred from timing.
+    /// </summary>
+    private sealed class PausePunctuator
+    {
+        private const long PeriodGapCs = 70;  // ≥ 700 ms of silence before a word
+        private static readonly bool DebugGaps =
+            Environment.GetEnvironmentVariable("VOXFLOW_DEBUG_GAPS") == "1";
+
+        private readonly StringBuilder _sb = new();
+        private long _prevEndCs = -1;
+        private int _periods;
+
+        public void AddSegment(SegmentData segment)
+        {
+            bool firstInSegment = true;
+            var tokens = segment.Tokens;
+            if (tokens == null || tokens.Length == 0)
+            {
+                // No token detail: fall back to the segment text as one unit.
+                AppendWord(" " + segment.Text.Trim(), -1, true);
+                return;
+            }
+            foreach (var tok in tokens)
+            {
+                string text = tok.Text;
+                if (string.IsNullOrEmpty(text) || text.StartsWith("[_", StringComparison.Ordinal)) continue;
+                AppendWord(text, tok.Start, firstInSegment);
+                _prevEndCs = tok.End;
+                firstInSegment = false;
+            }
+        }
+
+        private void AppendWord(string text, long startCs, bool segmentStart)
+        {
+            bool wordStart = text[0] == ' ' || segmentStart || _sb.Length == 0;
+            if (wordStart && _sb.Length > 0 && !EndsWithPunctuation())
+            {
+                long gap = (startCs >= 0 && _prevEndCs >= 0) ? startCs - _prevEndCs : 0;
+                string word = text.TrimStart();
+                bool capital = word.Length > 0 && char.IsUpper(word[0]);
+                bool pronounI = word == "I" || word.StartsWith("I ") || word.StartsWith("I'");
+                bool sentence = gap >= PeriodGapCs
+                             || (segmentStart && capital && (!pronounI || gap >= 30));
+                if (DebugGaps && gap >= 10) Log.Info($"gap {gap * 10} ms before \"{word}\" (segStart={segmentStart})");
+                if (sentence)
+                {
+                    _sb.Append('.');
+                    _periods++;
+                    text = " " + Capitalize(word);
+                }
+            }
+            if (wordStart && _sb.Length > 0 && text[0] != ' ') _sb.Append(' ');
+            _sb.Append(text);
+        }
+
+        private bool EndsWithPunctuation()
+        {
+            for (int i = _sb.Length - 1; i >= 0; i--)
+            {
+                char c = _sb[i];
+                if (char.IsWhiteSpace(c)) continue;
+                return c is '.' or '!' or '?' or ',' or ';' or ':' or '…' or '—' or '-' or '"' or '(' or '[';
+            }
+            return true;
+        }
+
+        private static string Capitalize(string w) =>
+            w.Length == 0 ? w : char.ToUpperInvariant(w[0]) + w.Substring(1);
+
+        public string Finish()
+        {
+            if (_periods > 0)
+                Log.Info($"Sentence breaks inferred from pauses/segments: {_periods}");
+            return _sb.ToString();
         }
     }
 
