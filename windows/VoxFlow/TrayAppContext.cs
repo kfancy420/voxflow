@@ -532,7 +532,9 @@ public sealed class TrayAppContext : ApplicationContext
         {
             _tray.Visible = false;
             _hook.Dispose();
-            Process.Start(new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true });
+            // The new instance waits for this one's single-instance lock to
+            // be released rather than bailing out with "already running".
+            Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--restarted-after-crash") { UseShellExecute = true });
         }
         catch (Exception ex)
         {

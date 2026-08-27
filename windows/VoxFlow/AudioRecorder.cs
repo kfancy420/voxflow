@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using NAudio.Wave;
 
 namespace VoxFlow;
@@ -15,6 +17,7 @@ public sealed class AudioRecorder : IDisposable
     private WaveInEvent? _waveIn;
     private readonly List<float> _samples = new();
     private readonly object _lock = new();
+    private readonly object _deviceLock = new();
     public bool IsRecording { get; private set; }
 
     private long _startTimestamp;
@@ -33,7 +36,7 @@ public sealed class AudioRecorder : IDisposable
             BufferMilliseconds = 30
         };
         _waveIn.DataAvailable += OnDataAvailable;
-        _waveIn.StartRecording();
+        lock (_deviceLock) { _waveIn.StartRecording(); }
         IsRecording = true;
     }
 
@@ -47,8 +50,35 @@ public sealed class AudioRecorder : IDisposable
         if (wi != null)
         {
             wi.DataAvailable -= OnDataAvailable;
-            try { wi.StopRecording(); } catch { /* device may be gone */ }
-            wi.Dispose();
+            // Never dispose the device while its capture thread may still be
+            // returning a buffer to the driver: that is a use-after-free in
+            // native code (AccessViolation in waveInAddBuffer) that .NET
+            // cannot catch and that killed the whole process on 2026-08-27.
+            // StopRecording asks the thread to finish; RecordingStopped fires
+            // after its loop has exited, and only then is the device closed.
+            // RecordingStopped can fire on the capture thread the instant its
+            // loop exits — before StopRecording() below has finished with the
+            // handle — so every call into the device is serialised on one
+            // lock; winmm faults (AccessViolation in waveInReset) rather than
+            // failing cleanly when a handle is closed under it.
+            int disposed = 0;
+            void DisposeOnce(string how)
+            {
+                if (Interlocked.Exchange(ref disposed, 1) == 1) return;
+                lock (_deviceLock)
+                {
+                    try { wi.Dispose(); }
+                    catch (Exception ex) { Log.Warn($"WaveIn dispose ({how}) failed: {ex.Message}"); }
+                }
+            }
+            wi.RecordingStopped += (_, _) => DisposeOnce("stopped");
+            lock (_deviceLock)
+            {
+                try { wi.StopRecording(); }
+                catch (Exception ex) { Log.Warn("StopRecording failed: " + ex.Message); }
+            }
+            // Safety net if the device never reports stopping (unplugged mid-take).
+            _ = Task.Delay(2000).ContinueWith(_ => DisposeOnce("timeout"));
         }
 
         lock (_lock)

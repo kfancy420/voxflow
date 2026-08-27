@@ -38,6 +38,9 @@ internal static class SelfTest
                 case "--selftest-mic":
                     exitCode = RecordMic(args.Length > 1 ? double.Parse(args[1]) : 3.0, report);
                     break;
+                case "--selftest-micstress":
+                    exitCode = MicStress(args.Length > 1 ? int.Parse(args[1]) : 300, report);
+                    break;
                 case "--selftest-clean":
                     // Runs the cleanup pipeline on a text file: punctuation
                     // rules can be tuned against real transcripts offline.
@@ -63,6 +66,33 @@ internal static class SelfTest
         Log.Info("selftest result:" + Environment.NewLine + text);
         try { File.WriteAllText(ResultPath, text); } catch { }
         return exitCode;
+    }
+
+    /// <summary>
+    /// Hammers the mic start/stop path — stopping right around buffer
+    /// callbacks — which is exactly the timing that produced the fatal
+    /// AccessViolation in waveInAddBuffer. A crash here kills the process,
+    /// so surviving N cycles and printing PASS is the whole test.
+    /// </summary>
+    private static int MicStress(int cycles, StringBuilder report)
+    {
+        report.AppendLine($"MODE --selftest-micstress {cycles}");
+        var recorder = new AudioRecorder();
+        var rng = new Random(12345);
+        long totalSamples = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < cycles; i++)
+        {
+            recorder.Start();
+            // Buffers arrive every 30 ms; land the stop all over that window.
+            Thread.Sleep(rng.Next(5, 95));
+            totalSamples += recorder.Stop().Length;
+            if (i % 50 == 49) Log.Info($"micstress {i + 1}/{cycles}");
+        }
+        Thread.Sleep(2500); // let deferred disposals run
+        report.AppendLine($"  cycles={cycles} samples={totalSamples} in {sw.Elapsed.TotalSeconds:F1}s");
+        report.AppendLine("  PASS");
+        return 0;
     }
 
     private static Transcriber LoadModel(StringBuilder report)
