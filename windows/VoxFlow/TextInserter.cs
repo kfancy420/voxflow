@@ -23,9 +23,33 @@ public sealed class TextInserter
     private const ushort VK_V = 0x56;
     private const uint KEYEVENTF_KEYUP = 0x0002;
 
-    private string? _savedClipboardText;
-    private bool _savedClipboardHadText;
+    private DataObject? _savedClipboard;
     private System.Windows.Forms.Timer? _restoreTimer;
+
+    /// <summary>
+    /// Copies every format on the clipboard into a private DataObject. The
+    /// object Clipboard.GetDataObject() returns is a live view that goes
+    /// stale the moment the clipboard changes, so the contents must be pulled
+    /// out format by format before we overwrite it. Text, images, files, rich
+    /// text — all of it comes back afterwards.
+    /// </summary>
+    private static DataObject? SnapshotClipboard()
+    {
+        var live = Clipboard.GetDataObject();
+        if (live == null) return null;
+        var copy = new DataObject();
+        int kept = 0;
+        foreach (string format in live.GetFormats(false))
+        {
+            try
+            {
+                object? data = live.GetData(format, false);
+                if (data != null) { copy.SetData(format, false, data); kept++; }
+            }
+            catch { /* some formats refuse to be read out-of-process; keep the rest */ }
+        }
+        return kept > 0 ? copy : null;
+    }
 
     public void Insert(string text, bool trailingSpace)
     {
@@ -37,14 +61,12 @@ public sealed class TextInserter
         {
             try
             {
-                _savedClipboardHadText = Clipboard.ContainsText();
-                _savedClipboardText = _savedClipboardHadText ? Clipboard.GetText() : null;
+                _savedClipboard = SnapshotClipboard();
             }
             catch (Exception ex)
             {
                 Log.Warn("Could not snapshot clipboard: " + ex.Message);
-                _savedClipboardHadText = false;
-                _savedClipboardText = null;
+                _savedClipboard = null;
             }
         }
         else
@@ -71,14 +93,13 @@ public sealed class TextInserter
             _restoreTimer = null;
             try
             {
-                if (_savedClipboardHadText && _savedClipboardText != null)
-                    Clipboard.SetText(_savedClipboardText);
+                if (_savedClipboard != null)
+                    Clipboard.SetDataObject(_savedClipboard, copy: true);
                 else
                     Clipboard.Clear();
             }
-            catch { /* clipboard busy — leave as-is */ }
-            _savedClipboardText = null;
-            _savedClipboardHadText = false;
+            catch (Exception ex) { Log.Warn("Could not restore clipboard: " + ex.Message); }
+            _savedClipboard = null;
         };
         _restoreTimer.Start();
     }
