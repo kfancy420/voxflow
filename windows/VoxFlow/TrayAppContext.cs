@@ -39,23 +39,6 @@ public sealed class TrayAppContext : ApplicationContext
 
     private bool _busy;
     private DateTime _recordingStart;
-    private readonly System.Windows.Forms.Timer _healthTimer;
-
-    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
-    {
-        if (e.Mode != PowerModes.Resume) return;
-        Log.Info("System resumed from sleep — scheduling engine check");
-        var t = new System.Windows.Forms.Timer { Interval = 10_000 };
-        t.Tick += (_, _) => { t.Stop(); t.Dispose(); EnsureEngineHealthy("resume", force: true); };
-        t.Start();
-    }
-
-    private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
-    {
-        if (e.Reason == SessionSwitchReason.SessionUnlock)
-            EnsureEngineHealthy("unlock", force: true);
-    }
-
     public TrayAppContext()
     {
         PersonalDictionary.EnsureExists();
@@ -170,26 +153,11 @@ public sealed class TrayAppContext : ApplicationContext
                         status + "  (see Open Log… in the tray menu)", ToolTipIcon.Error);
                 if (status.StartsWith("Ready", StringComparison.Ordinal))
                 {
-                    // Prove the fresh engine on real speech, and deliver
-                    // anything a previous instance had to leave behind.
+                    // Deliver anything a previous instance had to leave behind.
                     if (!_busy && TakeVault.HasPending) RecoverPendingTake("engine ready");
-                    EnsureEngineHealthy("model-ready");
                 }
             });
         };
-
-        _healthTimer = new System.Windows.Forms.Timer { Interval = (int)ProbeInterval.TotalMilliseconds };
-        _healthTimer.Tick += (_, _) =>
-        {
-            if (ShouldSkipIdleProbe(out string why)) { Log.Info($"Idle engine probe skipped: {why}"); return; }
-            EnsureEngineHealthy("periodic");
-        };
-        _healthTimer.Start();
-
-        // Sleep/resume and lock/unlock are exactly when a GPU context tends to
-        // vanish; check right away rather than waiting for the timer.
-        SystemEvents.PowerModeChanged += OnPowerModeChanged;
-        SystemEvents.SessionSwitch += OnSessionSwitch;
 
         _recorder.Level += level => RunOnUi(() => _hud.SetLevel(level));
 
@@ -455,65 +423,15 @@ public sealed class TrayAppContext : ApplicationContext
 
     // MARK: engine health
 
-    private DateTime _lastGoodProbe = DateTime.MinValue;
     private int _probing;
-    private static readonly TimeSpan ProbeMaxAge = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan ProbeInterval = TimeSpan.FromMinutes(15);
-    private static readonly TimeSpan ProbeIdleCutoff = TimeSpan.FromMinutes(10);
-
     /// <summary>
-    /// The idle probe is a convenience (keeps the engine warm), not the
-    /// safety net — the key-press probe is. So it yields to anything that
-    /// would notice a 200 ms GPU burst: a fullscreen game, or nobody at the
-    /// desk to dictate anyway.
-    /// </summary>
-    private static bool ShouldSkipIdleProbe(out string why)
-    {
-        if (IdleTime() > ProbeIdleCutoff) { why = "user idle"; return true; }
-        if (IsFullscreenAppForeground()) { why = "fullscreen app in foreground"; return true; }
-        why = "";
-        return false;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
-    [DllImport("user32.dll")] private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
-    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
-    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
-
-    private static TimeSpan IdleTime()
-    {
-        var info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
-        if (!GetLastInputInfo(ref info)) return TimeSpan.Zero;
-        return TimeSpan.FromMilliseconds(unchecked((uint)Environment.TickCount - info.dwTime));
-    }
-
-    /// <summary>A foreground window that exactly covers its monitor — how games (and fullscreen video) present.</summary>
-    private static bool IsFullscreenAppForeground()
-    {
-        try
-        {
-            IntPtr fg = GetForegroundWindow();
-            if (fg == IntPtr.Zero || fg == GetShellWindow()) return false;
-            if (!GetWindowRect(fg, out var r)) return false;
-            var screen = Screen.FromHandle(fg).Bounds;
-            return r.Left <= screen.Left && r.Top <= screen.Top &&
-                   r.Right >= screen.Right && r.Bottom >= screen.Bottom;
-        }
-        catch { return false; }
-    }
-
-    /// <summary>
-    /// Verifies the engine can still transcribe real speech and rebuilds it if
-    /// not. Safe to call often: a probe already in flight, a busy engine, or a
-    /// recent pass all short-circuit unless <paramref name="force"/>.
+    /// Runs on every hotkey press, concurrently with the microphone: proves
+    /// the engine can still transcribe real speech and rebuilds it if not, so
+    /// the take that is being recorded lands on a working engine. This is
+    /// the only time the engine is touched outside a dictation.
     /// </summary>
     private void EnsureEngineHealthy(string trigger, bool force = false)
     {
-        if (!force && DateTime.Now - _lastGoodProbe < ProbeMaxAge) return;
         if (_busy && !force) return;
         if (System.Threading.Interlocked.Exchange(ref _probing, 1) == 1) return;
 
@@ -525,15 +443,12 @@ public sealed class TrayAppContext : ApplicationContext
                 switch (health)
                 {
                     case Transcriber.Health.Ok:
-                        _lastGoodProbe = DateTime.Now;
                         break;
                     case Transcriber.Health.Dead:
                         Log.Info($"Engine dead ({trigger}) — rebuilding before it is needed");
                         RunOnUi(() => _statusItem.Text = "Restarting speech engine…");
                         await _transcriber.ReloadAsync();
-                        if (_transcriber.IsReady && await _transcriber.ProbeAsync("post-reload") == Transcriber.Health.Ok)
-                            _lastGoodProbe = DateTime.Now;
-                        else
+                        if (!(_transcriber.IsReady && await _transcriber.ProbeAsync("post-reload") == Transcriber.Health.Ok))
                             RestartSelf("engine still unhealthy after reload");
                         break;
                     case Transcriber.Health.Hung:
@@ -707,9 +622,6 @@ public sealed class TrayAppContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         Log.Info("Shutting down");
-        _healthTimer.Stop();
-        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-        SystemEvents.SessionSwitch -= OnSessionSwitch;
         _hook.Dispose();
         _recorder.Dispose();
         _transcriber.Dispose();
