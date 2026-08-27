@@ -103,7 +103,41 @@ public sealed class Transcriber : IDisposable
     private static string ModelUrl(ModelInfo model) =>
         $"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{model.FileName}";
 
-    public async Task LoadAsync(ModelInfo model)
+    private Task? _currentLoad;
+
+    public Task LoadAsync(ModelInfo model)
+    {
+        var task = LoadCoreAsync(model);
+        _currentLoad = task;
+        return task;
+    }
+
+    /// <summary>
+    /// If a (re)load is in flight, waits for it. Lets a dictation that was
+    /// captured while the engine was being rebuilt proceed on the new engine
+    /// instead of failing.
+    /// </summary>
+    public async Task WaitForEngineAsync()
+    {
+        var load = _currentLoad;
+        if (load != null && !load.IsCompleted)
+        {
+            Log.Info("Waiting for engine reload before transcribing…");
+            // Disposing a processor whose GPU context is gone can itself
+            // wedge inside the driver; a reload that never finishes is the
+            // same as a hang.
+            if (await Task.WhenAny(load, Task.Delay(TimeSpan.FromSeconds(ReloadSeconds))) != load)
+            {
+                Log.Error($"Engine reload did not finish within {ReloadSeconds}s");
+                throw new TranscriberFaultException(
+                    "The speech engine could not be rebuilt. VoxFlow is restarting itself; your dictation was saved.", hung: true);
+            }
+        }
+    }
+
+    private const double ReloadSeconds = 90;
+
+    private async Task LoadCoreAsync(ModelInfo model)
     {
         await _gate.WaitAsync();
         try
@@ -248,6 +282,7 @@ public sealed class Transcriber : IDisposable
     /// <summary>Transcribes samples to raw text. Returns "" for very short takes.</summary>
     public async Task<string> TranscribeAsync(float[] samples)
     {
+        await WaitForEngineAsync();
         if (!IsReady || _processor == null)
             throw new InvalidOperationException("Model not loaded yet — check the tray icon for status.");
         if (samples.Length < 4800) // under 0.3 s
@@ -260,17 +295,91 @@ public sealed class Transcriber : IDisposable
             return string.Empty;
         }
 
+        double audioSeconds = samples.Length / 16000.0;
+        var budget = TimeSpan.FromSeconds(Math.Max(HungSeconds, audioSeconds * HungMultiplier));
+        var (rawText, segmentCount, elapsedMs) = await RunGuardedAsync(samples, budget, "dictation");
+
+        // A dead GPU context does not throw — whisper just returns no
+        // segments almost instantly. Real inference on a second or more
+        // of clearly audible speech never finishes that fast.
+        if (segmentCount == 0 && audioSeconds >= 1.0 && rms >= QuietRms && elapsedMs < InstantEmptyMs)
+        {
+            IsReady = false;
+            Log.Error($"Backend returned nothing in {elapsedMs} ms for {audioSeconds:F1}s of audio " +
+                      $"(rms={rms:F4}, backend={Backend}) — treating as a lost context");
+            throw new TranscriberFaultException(
+                "The speech engine lost its GPU context; reloading it and retrying your dictation.", hung: false);
+        }
+
+        string text = StripArtifacts(rawText);
+
+        if (rms < QuietRms && IsLikelyHallucination(text))
+        {
+            Log.Info($"Discarded likely hallucination \"{text}\" (rms={rms:F5})");
+            return string.Empty;
+        }
+        return text;
+    }
+
+    public enum Health { Ok, Dead, Hung, Skipped }
+
+    /// <summary>
+    /// Proves the backend can still transcribe real speech. Cheap enough
+    /// (well under a second on the GPU) to run on every hotkey press, and it
+    /// runs concurrently with the microphone, so a dead engine is already
+    /// being rebuilt while the user is still talking.
+    /// </summary>
+    public async Task<Health> ProbeAsync(string trigger)
+    {
+        if (!IsReady || _processor == null) return Health.Skipped;
+        var clip = HealthClip.Samples;
+
+        try
+        {
+            if (clip != null)
+            {
+                var (text, segments, ms) = await RunGuardedAsync(clip, TimeSpan.FromSeconds(ProbeSeconds), $"probe:{trigger}");
+                string t = StripArtifacts(text);
+                if (segments > 0 && HealthClip.Matches(t))
+                {
+                    Log.Info($"Engine probe OK ({trigger}, {ms} ms, backend={Backend})");
+                    return Health.Ok;
+                }
+                Log.Error($"Engine probe FAILED ({trigger}): {segments} segment(s) in {ms} ms, heard \"{t}\" (backend={Backend})");
+            }
+            else
+            {
+                // No speech clip: the best available signal is timing. Half a
+                // second of silence takes ~100 ms of real work on the GPU; a
+                // dead context returns in a couple of ms.
+                var (_, _, ms) = await RunGuardedAsync(new float[8000], TimeSpan.FromSeconds(ProbeSeconds), $"probe:{trigger}");
+                if (ms >= 15) return Health.Ok;
+                Log.Error($"Engine probe FAILED ({trigger}): silence 'processed' in {ms} ms (backend={Backend})");
+            }
+        }
+        catch (TranscriberFaultException f) when (f.Hung)
+        {
+            return Health.Hung;
+        }
+
+        IsReady = false;
+        return Health.Dead;
+    }
+
+    /// <summary>
+    /// Runs the native call under the gate with a watchdog. The call cannot be
+    /// cancelled, so on timeout the gate stays held and the caller must
+    /// restart the process.
+    /// </summary>
+    private async Task<(string Text, int Segments, long ElapsedMs)> RunGuardedAsync(
+        float[] samples, TimeSpan budget, string what)
+    {
         await _gate.WaitAsync();
         bool hung = false;
         try
         {
-            double audioSeconds = samples.Length / 16000.0;
-            var processor = _processor;
+            var processor = _processor ?? throw new InvalidOperationException("Model not loaded.");
             var sw = System.Diagnostics.Stopwatch.StartNew();
-
-            // The native call cannot be cancelled, so run it on its own task
-            // and give up waiting after a generous multiple of the audio
-            // length. A healthy backend (even CPU) is well inside this.
             var work = Task.Run(async () =>
             {
                 var sb = new StringBuilder();
@@ -280,54 +389,30 @@ public sealed class Transcriber : IDisposable
                     segments++;
                     sb.Append(segment.Text);
                 }
-                return (Text: sb.ToString(), Segments: segments);
+                return (sb.ToString(), segments);
             });
-            var budget = TimeSpan.FromSeconds(Math.Max(HungSeconds, audioSeconds * HungMultiplier));
+
             if (await Task.WhenAny(work, Task.Delay(budget)) != work)
             {
                 hung = true;
                 IsReady = false;
-                Log.Error($"Transcription hung: no result after {budget.TotalSeconds:F0}s " +
-                          $"for {audioSeconds:F1}s of audio (backend={Backend})");
+                Log.Error($"Transcription hung ({what}): no result after {budget.TotalSeconds:F0}s " +
+                          $"for {samples.Length / 16000.0:F1}s of audio (backend={Backend})");
                 throw new TranscriberFaultException(
-                    "The speech engine stopped responding. VoxFlow will restart itself.", hung: true);
+                    "The speech engine stopped responding. VoxFlow is restarting itself; your dictation was saved.", hung: true);
             }
-            var (rawText, segmentCount) = await work;
-            sw.Stop();
-
-            // A dead GPU context does not throw — whisper just returns no
-            // segments almost instantly. Real inference on a second or more
-            // of clearly audible speech never finishes that fast.
-            if (segmentCount == 0 && audioSeconds >= 1.0 && rms >= QuietRms
-                && sw.ElapsedMilliseconds < InstantEmptyMs)
-            {
-                IsReady = false;
-                Log.Error($"Backend returned nothing in {sw.ElapsedMilliseconds} ms for " +
-                          $"{audioSeconds:F1}s of audio (rms={rms:F4}, backend={Backend}) — treating as a lost context");
-                throw new TranscriberFaultException(
-                    "The speech engine lost its GPU context; reloading it now. Please say that again.", hung: false);
-            }
-
-            string text = StripArtifacts(rawText);
-
-            if (rms < QuietRms && IsLikelyHallucination(text))
-            {
-                Log.Info($"Discarded likely hallucination \"{text}\" (rms={rms:F5})");
-                return string.Empty;
-            }
-            return text;
+            var (text, count) = await work;
+            return (text, count, sw.ElapsedMilliseconds);
         }
         finally
         {
-            // If the native call is still blocked the processor is unusable
-            // anyway; leaving the gate held keeps anyone else from touching it
-            // while the process restarts.
             if (!hung) _gate.Release();
         }
     }
 
     private const double HungSeconds = 30;      // floor for short takes
     private const double HungMultiplier = 3;    // × audio length for long takes
+    private const double ProbeSeconds = 15;
     private const int InstantEmptyMs = 150;
 
     private static bool IsLikelyHallucination(string text)

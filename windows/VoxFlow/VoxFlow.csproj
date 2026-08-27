@@ -9,7 +9,7 @@
     <AssemblyName>VoxFlow</AssemblyName>
     <RootNamespace>VoxFlow</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>1.0.3</Version>
+    <Version>1.1.0</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
 
     <!--
@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="System.Speech" Version="8.0.0" />
     <PackageReference Include="Whisper.net" Version="1.7.4" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.7.4" />
     <!-- GPU backend. ~10 MB, and on this class of hardware it transcribes an

@@ -39,6 +39,22 @@ public sealed class TrayAppContext : ApplicationContext
 
     private bool _busy;
     private DateTime _recordingStart;
+    private readonly System.Windows.Forms.Timer _healthTimer;
+
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode != PowerModes.Resume) return;
+        Log.Info("System resumed from sleep — scheduling engine check");
+        var t = new System.Windows.Forms.Timer { Interval = 10_000 };
+        t.Tick += (_, _) => { t.Stop(); t.Dispose(); EnsureEngineHealthy("resume", force: true); };
+        t.Start();
+    }
+
+    private void OnSessionSwitch(object? sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason == SessionSwitchReason.SessionUnlock)
+            EnsureEngineHealthy("unlock", force: true);
+    }
 
     public TrayAppContext()
     {
@@ -94,6 +110,13 @@ public sealed class TrayAppContext : ApplicationContext
             _ = _transcriber.ReloadAsync();
         };
 
+        var recoverItem = new ToolStripMenuItem("Recover Last Take");
+        recoverItem.Click += (_, _) =>
+        {
+            if (TakeVault.HasPending) RecoverPendingTake("manual");
+            else _tray.ShowBalloonTip(3000, "VoxFlow", "Nothing to recover — the last take was delivered.", ToolTipIcon.Info);
+        };
+
         _startupItem = new ToolStripMenuItem("Start with Windows") { Checked = IsStartupEnabled(), CheckOnClick = true };
         _startupItem.CheckedChanged += (_, _) => SetStartupEnabled(_startupItem.Checked);
 
@@ -111,6 +134,7 @@ public sealed class TrayAppContext : ApplicationContext
         menu.Items.Add(logItem);
         menu.Items.Add(rehookItem);
         menu.Items.Add(reloadEngineItem);
+        menu.Items.Add(recoverItem);
         menu.Items.Add(_startupItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(quitItem);
@@ -144,8 +168,24 @@ public sealed class TrayAppContext : ApplicationContext
                 if (status.StartsWith("Model error", StringComparison.Ordinal))
                     _tray.ShowBalloonTip(8000, "VoxFlow — dictation unavailable",
                         status + "  (see Open Log… in the tray menu)", ToolTipIcon.Error);
+                if (status.StartsWith("Ready", StringComparison.Ordinal))
+                {
+                    // Prove the fresh engine on real speech, and deliver
+                    // anything a previous instance had to leave behind.
+                    if (!_busy && TakeVault.HasPending) RecoverPendingTake("engine ready");
+                    EnsureEngineHealthy("model-ready");
+                }
             });
         };
+
+        _healthTimer = new System.Windows.Forms.Timer { Interval = (int)ProbeInterval.TotalMilliseconds };
+        _healthTimer.Tick += (_, _) => EnsureEngineHealthy("periodic");
+        _healthTimer.Start();
+
+        // Sleep/resume and lock/unlock are exactly when a GPU context tends to
+        // vanish; check right away rather than waiting for the timer.
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionSwitch += OnSessionSwitch;
 
         _recorder.Level += level => RunOnUi(() => _hud.SetLevel(level));
 
@@ -278,6 +318,10 @@ public sealed class TrayAppContext : ApplicationContext
             _hud.ShowRecording();
             Log.Info($"Recording started (hook→handler {dispatchMs:F1} ms, mic open {micMs:F1} ms, " +
                      $"hud {sw.Elapsed.TotalMilliseconds - micMs:F1} ms)");
+
+            // Verify the engine while the user is talking, so a dead one is
+            // already rebuilt by the time they release the key.
+            EnsureEngineHealthy("keypress");
         }
         catch (Exception ex)
         {
@@ -309,12 +353,16 @@ public sealed class TrayAppContext : ApplicationContext
         _hud.ShowWorking("Transcribing…");
         _busy = true;
 
+        // On disk before anything can go wrong with the engine: if the
+        // process has to restart, the take is recovered on the next launch.
+        TakeVault.Save(samples);
+
         Task.Run(async () =>
         {
             try
             {
                 var sw = Stopwatch.StartNew();
-                string raw = await _transcriber.TranscribeAsync(samples);
+                string raw = await TranscribeWithRetryAsync(samples);
                 sw.Stop();
                 string trimmed = raw.Trim();
                 Log.Info($"Transcribed in {sw.ElapsedMilliseconds} ms: \"{trimmed}\"");
@@ -324,6 +372,7 @@ public sealed class TrayAppContext : ApplicationContext
                     _busy = false;
                     if (trimmed.Length == 0)
                     {
+                        TakeVault.Clear();
                         _hud.HideHud();
                         _statusItem.Text = "Ready — nothing heard";
                         return;
@@ -337,6 +386,7 @@ public sealed class TrayAppContext : ApplicationContext
                     double insertMs = postSw.Elapsed.TotalMilliseconds - cleanMs;
 
                     HistoryStore.Add(trimmed, cleaned, null);
+                    TakeVault.Clear();
                     _statusItem.Text = $"Ready — last: {sw.ElapsedMilliseconds} ms";
                     _hud.HideHud();
 
@@ -348,15 +398,16 @@ public sealed class TrayAppContext : ApplicationContext
             }
             catch (TranscriberFaultException fault)
             {
-                Log.Error("Speech engine fault", fault);
+                // Only reached when the engine could not be brought back in
+                // place; the take is still in the vault for the next launch.
+                Log.Error("Speech engine fault — restarting", fault);
                 RunOnUi(() =>
                 {
-                    _busy = false;
                     _hud.HideHud();
                     _tray.ShowBalloonTip(6000, "VoxFlow", fault.Message, ToolTipIcon.Warning);
                 });
-                if (fault.Hung) RestartSelf("speech engine hung");
-                else await _transcriber.ReloadAsync();
+                await Task.Delay(1500); // let the balloon show
+                RestartSelf("speech engine hung");
             }
             catch (Exception ex)
             {
@@ -365,11 +416,140 @@ public sealed class TrayAppContext : ApplicationContext
                 {
                     _busy = false;
                     _hud.HideHud();
-                    _tray.ShowBalloonTip(5000, "VoxFlow", ex.Message, ToolTipIcon.Warning);
+                    _tray.ShowBalloonTip(5000, "VoxFlow",
+                        ex.Message + "  Your dictation was kept — use 'Recover Last Take' in the tray menu.",
+                        ToolTipIcon.Warning);
                 });
             }
         });
     }
+
+    /// <summary>
+    /// A lost GPU context surfaces as a non-hung fault: rebuild the engine and
+    /// run the same audio again, so the user never has to repeat themselves.
+    /// A hang propagates — nothing in-process can fix that.
+    /// </summary>
+    private async Task<string> TranscribeWithRetryAsync(float[] samples)
+    {
+        try
+        {
+            return await _transcriber.TranscribeAsync(samples);
+        }
+        catch (TranscriberFaultException fault) when (!fault.Hung)
+        {
+            Log.Info("Engine fault during dictation — reloading and retrying the same take");
+            RunOnUi(() => _hud.ShowWorking("Restarting engine…"));
+            await _transcriber.ReloadAsync();
+            if (!_transcriber.IsReady)
+                throw new TranscriberFaultException("The speech engine could not be reloaded.", hung: true);
+            RunOnUi(() => _hud.ShowWorking("Transcribing…"));
+            return await _transcriber.TranscribeAsync(samples);
+        }
+    }
+
+    // MARK: engine health
+
+    private DateTime _lastGoodProbe = DateTime.MinValue;
+    private int _probing;
+    private static readonly TimeSpan ProbeMaxAge = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan ProbeInterval = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Verifies the engine can still transcribe real speech and rebuilds it if
+    /// not. Safe to call often: a probe already in flight, a busy engine, or a
+    /// recent pass all short-circuit unless <paramref name="force"/>.
+    /// </summary>
+    private void EnsureEngineHealthy(string trigger, bool force = false)
+    {
+        if (!force && DateTime.Now - _lastGoodProbe < ProbeMaxAge) return;
+        if (_busy && !force) return;
+        if (System.Threading.Interlocked.Exchange(ref _probing, 1) == 1) return;
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                var health = await _transcriber.ProbeAsync(trigger);
+                switch (health)
+                {
+                    case Transcriber.Health.Ok:
+                        _lastGoodProbe = DateTime.Now;
+                        break;
+                    case Transcriber.Health.Dead:
+                        Log.Info($"Engine dead ({trigger}) — rebuilding before it is needed");
+                        RunOnUi(() => _statusItem.Text = "Restarting speech engine…");
+                        await _transcriber.ReloadAsync();
+                        if (_transcriber.IsReady && await _transcriber.ProbeAsync("post-reload") == Transcriber.Health.Ok)
+                            _lastGoodProbe = DateTime.Now;
+                        else
+                            RestartSelf("engine still unhealthy after reload");
+                        break;
+                    case Transcriber.Health.Hung:
+                        if (_recorder.IsRecording || _busy)
+                        {
+                            // Let the take finish and be vaulted; the release
+                            // path will hit the hang and restart with it saved.
+                            Log.Error("Engine hung during a take — deferring restart until the take is saved");
+                            break;
+                        }
+                        RestartSelf("engine hung during health probe");
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Engine probe error ({trigger})", ex);
+            }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _probing, 0);
+            }
+        });
+    }
+
+    /// <summary>
+    /// A take that survived a restart (or a failed insert) is transcribed as
+    /// soon as the engine is ready and placed on the clipboard — pasting into
+    /// whatever window happens to be focused later would be a nasty surprise.
+    /// </summary>
+    private void RecoverPendingTake(string reason)
+    {
+        var samples = TakeVault.Load();
+        if (samples == null || samples.Length < 4800) { TakeVault.Clear(); return; }
+        Log.Info($"Recovering pending take ({samples.Length / 16000.0:F1}s, {reason})");
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                string raw = (await _transcriber.TranscribeAsync(samples)).Trim();
+                if (raw.Length == 0)
+                {
+                    Log.Info("Pending take transcribed to nothing — dropped");
+                    TakeVault.Clear();
+                    return;
+                }
+                string withDictionary = PersonalDictionary.Apply(raw);
+                string cleaned = _settings.CleanupEnabled ? TextCleaner.Clean(withDictionary) : withDictionary;
+                RunOnUi(() =>
+                {
+                    try { Clipboard.SetText(cleaned); }
+                    catch (Exception ex) { Log.Warn($"Clipboard unavailable: {ex.Message}"); }
+                    HistoryStore.Add(raw, cleaned, "recovered");
+                    TakeVault.Clear();
+                    Log.Info($"Recovered take ({cleaned.Length} chars) placed on clipboard");
+                    _tray.ShowBalloonTip(10000, "VoxFlow — dictation recovered",
+                        "Your last dictation was saved and is now on the clipboard — press Ctrl+V to paste it. " +
+                        "It is also in History.", ToolTipIcon.Info);
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Could not recover pending take (kept on disk)", ex);
+            }
+        });
+    }
+
 
     /// <summary>
     /// A native whisper call that never returns cannot be unwound from managed
@@ -475,6 +655,9 @@ public sealed class TrayAppContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         Log.Info("Shutting down");
+        _healthTimer.Stop();
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.SessionSwitch -= OnSessionSwitch;
         _hook.Dispose();
         _recorder.Dispose();
         _transcriber.Dispose();
