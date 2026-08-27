@@ -179,7 +179,11 @@ public sealed class TrayAppContext : ApplicationContext
         };
 
         _healthTimer = new System.Windows.Forms.Timer { Interval = (int)ProbeInterval.TotalMilliseconds };
-        _healthTimer.Tick += (_, _) => EnsureEngineHealthy("periodic");
+        _healthTimer.Tick += (_, _) =>
+        {
+            if (ShouldSkipIdleProbe(out string why)) { Log.Info($"Idle engine probe skipped: {why}"); return; }
+            EnsureEngineHealthy("periodic");
+        };
         _healthTimer.Start();
 
         // Sleep/resume and lock/unlock are exactly when a GPU context tends to
@@ -353,9 +357,10 @@ public sealed class TrayAppContext : ApplicationContext
         _hud.ShowWorking("Transcribing…");
         _busy = true;
 
-        // On disk before anything can go wrong with the engine: if the
-        // process has to restart, the take is recovered on the next launch.
-        TakeVault.Save(samples);
+        // To disk in parallel with transcription (a few ms of SSD write, off
+        // the critical path): if the process has to restart, the take is
+        // recovered on the next launch.
+        var vaulted = Task.Run(() => TakeVault.Save(samples));
 
         Task.Run(async () =>
         {
@@ -406,6 +411,7 @@ public sealed class TrayAppContext : ApplicationContext
                     _hud.HideHud();
                     _tray.ShowBalloonTip(6000, "VoxFlow", fault.Message, ToolTipIcon.Warning);
                 });
+                await vaulted;          // never restart before the take is on disk
                 await Task.Delay(1500); // let the balloon show
                 RestartSelf("speech engine hung");
             }
@@ -452,7 +458,53 @@ public sealed class TrayAppContext : ApplicationContext
     private DateTime _lastGoodProbe = DateTime.MinValue;
     private int _probing;
     private static readonly TimeSpan ProbeMaxAge = TimeSpan.FromSeconds(60);
-    private static readonly TimeSpan ProbeInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan ProbeInterval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan ProbeIdleCutoff = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The idle probe is a convenience (keeps the engine warm), not the
+    /// safety net — the key-press probe is. So it yields to anything that
+    /// would notice a 200 ms GPU burst: a fullscreen game, or nobody at the
+    /// desk to dictate anyway.
+    /// </summary>
+    private static bool ShouldSkipIdleProbe(out string why)
+    {
+        if (IdleTime() > ProbeIdleCutoff) { why = "user idle"; return true; }
+        if (IsFullscreenAppForeground()) { why = "fullscreen app in foreground"; return true; }
+        why = "";
+        return false;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+    [DllImport("user32.dll")] private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
+
+    private static TimeSpan IdleTime()
+    {
+        var info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+        if (!GetLastInputInfo(ref info)) return TimeSpan.Zero;
+        return TimeSpan.FromMilliseconds(unchecked((uint)Environment.TickCount - info.dwTime));
+    }
+
+    /// <summary>A foreground window that exactly covers its monitor — how games (and fullscreen video) present.</summary>
+    private static bool IsFullscreenAppForeground()
+    {
+        try
+        {
+            IntPtr fg = GetForegroundWindow();
+            if (fg == IntPtr.Zero || fg == GetShellWindow()) return false;
+            if (!GetWindowRect(fg, out var r)) return false;
+            var screen = Screen.FromHandle(fg).Bounds;
+            return r.Left <= screen.Left && r.Top <= screen.Top &&
+                   r.Right >= screen.Right && r.Bottom >= screen.Bottom;
+        }
+        catch { return false; }
+    }
 
     /// <summary>
     /// Verifies the engine can still transcribe real speech and rebuilds it if
