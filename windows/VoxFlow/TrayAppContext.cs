@@ -86,6 +86,14 @@ public sealed class TrayAppContext : ApplicationContext
 
         var rehookItem = new ToolStripMenuItem("Reinstall Hotkey Hook");
 
+        var reloadEngineItem = new ToolStripMenuItem("Restart Speech Engine");
+        reloadEngineItem.Click += (_, _) =>
+        {
+            if (_busy) { RestartSelf("manual restart while transcribing"); return; }
+            Log.Info("Manual speech engine reload");
+            _ = _transcriber.ReloadAsync();
+        };
+
         _startupItem = new ToolStripMenuItem("Start with Windows") { Checked = IsStartupEnabled(), CheckOnClick = true };
         _startupItem.CheckedChanged += (_, _) => SetStartupEnabled(_startupItem.Checked);
 
@@ -102,6 +110,7 @@ public sealed class TrayAppContext : ApplicationContext
         menu.Items.Add(clearHistoryItem);
         menu.Items.Add(logItem);
         menu.Items.Add(rehookItem);
+        menu.Items.Add(reloadEngineItem);
         menu.Items.Add(_startupItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(quitItem);
@@ -337,6 +346,18 @@ public sealed class TrayAppContext : ApplicationContext
                              $"transcribe {sw.ElapsedMilliseconds}, clean {cleanMs:F0}, insert {insertMs:F0})");
                 });
             }
+            catch (TranscriberFaultException fault)
+            {
+                Log.Error("Speech engine fault", fault);
+                RunOnUi(() =>
+                {
+                    _busy = false;
+                    _hud.HideHud();
+                    _tray.ShowBalloonTip(6000, "VoxFlow", fault.Message, ToolTipIcon.Warning);
+                });
+                if (fault.Hung) RestartSelf("speech engine hung");
+                else await _transcriber.ReloadAsync();
+            }
             catch (Exception ex)
             {
                 Log.Error("Transcription failed", ex);
@@ -348,6 +369,28 @@ public sealed class TrayAppContext : ApplicationContext
                 });
             }
         });
+    }
+
+    /// <summary>
+    /// A native whisper call that never returns cannot be unwound from managed
+    /// code, so the only clean recovery is a fresh process. Environment.Exit
+    /// rather than ExitThread: the stuck thread would otherwise keep the old
+    /// process alive next to the new one.
+    /// </summary>
+    private void RestartSelf(string reason)
+    {
+        Log.Info($"Restarting VoxFlow: {reason}");
+        try
+        {
+            _tray.Visible = false;
+            _hook.Dispose();
+            Process.Start(new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Could not relaunch VoxFlow", ex);
+        }
+        Environment.Exit(1);
     }
 
     // MARK: helpers
