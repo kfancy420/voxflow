@@ -29,6 +29,9 @@ public static class TextCleaner
         text = Regex.Replace(text, @"[ \t]+([,.!?;:])", "$1");
         text = Regex.Replace(text, @"([,!?;:])(?=[A-Za-z0-9])", "$1 ");
         text = Regex.Replace(text, @"(?<=[A-Za-z]{2})\.(?=[A-Za-z])", ". ");
+        // Sanity first resolves whisper's provisional segment breaks, so the
+        // splitter sees the true run-ons; sanity again vets the splitter.
+        text = PunctuationSanity.Apply(text);
         text = RunOnSplitter.Split(text);
         text = PunctuationSanity.Apply(text);
         // A joined restart ("the. The goal") leaves a doubled word.

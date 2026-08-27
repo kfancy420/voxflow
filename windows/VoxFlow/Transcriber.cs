@@ -318,7 +318,9 @@ public sealed class Transcriber : IDisposable
                 "The speech engine lost its GPU context; reloading it and retrying your dictation.", hung: false);
         }
 
-        string text = StripArtifacts(rawText);
+        // Resolve the provisional segment breaks here so the raw transcript
+        // (History, cleanup-off mode) never carries the marker.
+        string text = PunctuationSanity.Apply(StripArtifacts(rawText));
 
         if (rms < QuietRms && IsLikelyHallucination(text))
         {
@@ -440,7 +442,10 @@ public sealed class Transcriber : IDisposable
                 bool punctuated = last is '.' or '!' or '?' or ',' or ';' or ':' or '…' or '—' or '-' or '"';
                 bool capital = char.IsUpper(t[0]);
                 bool pronounI = t == "I" || t.StartsWith("I ", StringComparison.Ordinal) || t.StartsWith("I'", StringComparison.Ordinal);
-                if (!punctuated && capital && !pronounI) { _sb.Append('.'); _breaks++; }
+                // Inserted as a provisional marker, not a period: the sanity
+                // pass holds inferred breaks to a stricter standard than
+                // whisper's own punctuation and turns the survivors into '.'.
+                if (!punctuated && capital && !pronounI) { _sb.Append(PunctuationSanity.InferredBreak); _breaks++; }
                 _sb.Append(' ');
             }
             _sb.Append(t);
@@ -448,7 +453,7 @@ public sealed class Transcriber : IDisposable
 
         public string Finish()
         {
-            if (_breaks > 0) Log.Info($"Sentence breaks restored at segment boundaries: {_breaks}");
+            if (_breaks > 0) Log.Info($"Provisional sentence breaks at segment boundaries: {_breaks}");
             return _sb.ToString();
         }
     }

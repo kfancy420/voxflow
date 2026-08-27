@@ -105,7 +105,7 @@ public static class RunOnSplitter
                 bool runOn = RunOnAhead(words, i, sinceBreak);
                 if (runOn && sinceBreak >= MinWordsBetweenBreaks && IsSentenceStart(words, i))
                 {
-                    sb.Append('.');
+                    sb.Append(PunctuationSanity.InferredBreak); // provisional; sanity pass confirms
                     sinceBreak = 0;
                     inserted++;
                 }
@@ -131,7 +131,8 @@ public static class RunOnSplitter
     }
 
     private static bool EndsSentence(string w) =>
-        w.Length > 0 && (w[^1] is '.' or '!' or '?' || (w.Length > 1 && w[^1] is '"' or '\'' && w[^2] is '.' or '!' or '?'));
+        w.Length > 0 && (w[^1] is '.' or '!' or '?' || w[^1] == PunctuationSanity.InferredBreak
+                         || (w.Length > 1 && w[^1] is '"' or '\'' && w[^2] is '.' or '!' or '?'));
 
     private static bool IsSentenceStart(string[] words, int i)
     {

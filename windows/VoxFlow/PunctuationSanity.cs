@@ -19,6 +19,53 @@ namespace VoxFlow;
 /// </summary>
 public static class PunctuationSanity
 {
+    /// <summary>
+    /// Provisional sentence break written by the inference layers (segment
+    /// join, run-on splitter). Unlike a period whisper wrote itself, it must
+    /// pass the strict test below to become a '.'; otherwise it is removed.
+    /// </summary>
+    public const char InferredBreak = '§';
+
+    /// <summary>
+    /// Words an *inferred* sentence may not end on — far broader than the
+    /// list for whisper's own periods. "I think so." and "Make sure." are real
+    /// sentences when whisper heard them end; when a segment merely happened
+    /// to split after "so" or "sure", they are almost always mid-sentence.
+    /// </summary>
+    private static readonly HashSet<string> StrictNonTerminal = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Connectives and adverbs that lead into what follows.
+        "so", "then", "like", "just", "still", "even", "well", "maybe", "also", "too", "again",
+        "including", "especially", "basically", "actually", "literally", "honestly", "really",
+        "very", "pretty", "quite", "kind", "sort", "sure",
+        // Verbs that need a complement ("make sure", "I think", "you want").
+        // ("just do it.", "that's all I have.", "what I got." are real ends,
+        // so do/have/got/made stay off this list.)
+        "mean", "think", "thought", "know", "guess", "make", "makes", "go", "goes", "went",
+        "get", "gets", "say", "says", "said", "want", "wants", "wanted", "need", "needs",
+        "needed", "let", "let's", "keep", "keeps", "kept", "put", "puts", "give", "gives", "gave",
+        "seem", "seems", "seemed", "become", "became",
+        // Auxiliaries, modals, negations.
+        "is", "are", "was", "were", "be", "been", "being", "am",
+        "will", "would", "could", "should", "can", "may", "might", "must", "shall", "not",
+        "don't", "doesn't", "didn't", "isn't", "aren't", "wasn't", "weren't", "can't", "couldn't",
+        "wouldn't", "shouldn't", "won't", "haven't", "hasn't", "hadn't",
+        // Subjects and determiners that start a clause.
+        "he", "she", "they", "we", "you", "who", "what", "where", "when", "how", "why", "each",
+        "both", "either", "some", "any", "every", "no",
+        // Prepositions.
+        "in", "on", "at", "by", "about", "over", "into", "onto", "through", "under", "between",
+    };
+    private const int StrictMinWords = 4;
+
+    /// <summary>
+    /// A connective at the end of an inferred sentence usually opens the next
+    /// one: "…push to GitHub etc so§ Here's the take" → "…etc. So here's the take".
+    /// </summary>
+    private static readonly HashSet<string> LeadsNextSentence = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "so", "then", "also", "anyway", "anyways", "basically", "honestly", "otherwise", "again",
+    };
     /// <summary>Words a sentence cannot end on.</summary>
     private static readonly HashSet<string> NonTerminal = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -55,7 +102,7 @@ public static class PunctuationSanity
         "or", "nor",
     };
 
-    private static readonly Regex SentenceEnd = new(@"(?<=[.!?])\s+(?=\S)", RegexOptions.Compiled);
+    private static readonly Regex SentenceEnd = new(@"(?<=[.!?§])\s+(?=\S)", RegexOptions.Compiled);
 
     public static string Apply(string text)
     {
@@ -63,7 +110,8 @@ public static class PunctuationSanity
         var paragraphs = text.Split('\n');
         for (int p = 0; p < paragraphs.Length; p++)
             paragraphs[p] = ApplyParagraph(paragraphs[p]);
-        return string.Join("\n", paragraphs);
+        // Any inferred break still standing has earned its period.
+        return string.Join("\n", paragraphs).Replace(InferredBreak, '.');
     }
 
     private static string ApplyParagraph(string text)
@@ -77,6 +125,25 @@ public static class PunctuationSanity
         {
             string prev = result[^1];
             string cur = sentences[i];
+
+            // Inferred break right after a connective: move the break in
+            // front of it, provided what is left still ends like a sentence.
+            if (prev[^1] == InferredBreak && LeadsNextSentence.Contains(LastWord(prev)))
+            {
+                string connective = LastWord(prev);
+                string head = prev.Substring(0, prev.Length - 1).TrimEnd();
+                head = head.Substring(0, head.Length - connective.Length).TrimEnd();
+                string headLast = LastWord(head);
+                if (WordCount(head) >= StrictMinWords && headLast.Length > 0 &&
+                    !StrictNonTerminal.Contains(headLast) && !NonTerminal.Contains(headLast))
+                {
+                    result[^1] = head + ".";
+                    result.Add(Capitalize(connective) + " " + Lower(cur));
+                    joined++;
+                    continue;
+                }
+            }
+
             string reason = JoinReason(prev, cur);
             if (reason == null)
             {
@@ -100,36 +167,47 @@ public static class PunctuationSanity
 
         if (NonTerminal.Contains(prevLast)) return "ends on non-terminal word";
         if (NoSentenceStart.Contains(curFirst)) return "starts with conjunction";
+        if (prevEnd == InferredBreak)
+        {
+            // Inferred, not heard: must look like a sentence end on its own merits.
+            if (StrictNonTerminal.Contains(prevLast)) return "inferred break after connective/verb";
+            if (WordCount(prev) < StrictMinWords) return "inferred break after too few words";
+        }
         // A lone word is a fragment ("Afterwards.") unless it is a real
         // one-word sentence. Two-word sentences ("Do this.", "I can't.") are
         // left alone. A fragment ending on a continuation word ("Like the.")
         // belongs to the sentence AFTER it; the non-terminal rule joins it
         // forward on the next step, so do not pull it backward here.
-        if (curWords == 1 && cur[^1] == '.' && !Interjections.Contains(Core(cur)) && !NonTerminal.Contains(curFirst))
+        if (curWords == 1 && cur[^1] is '.' or InferredBreak && !Interjections.Contains(Core(cur)) && !NonTerminal.Contains(curFirst))
             return "fragment";
         return null;
     }
 
     private static string Join(string prev, string cur)
     {
-        // Drop the false terminal punctuation on prev (keep a comma if it was one).
+        // Drop the false terminal punctuation on prev.
         string head = prev.TrimEnd();
         head = head.Substring(0, head.Length - 1).TrimEnd();
-        // The word after a false break is not a sentence start; lower-case it
-        // unless it is the pronoun I or an all-caps token (acronym).
-        string tail = cur;
-        int firstLetter = 0;
-        while (firstLetter < tail.Length && !char.IsLetter(tail[firstLetter])) firstLetter++;
-        if (firstLetter < tail.Length)
-        {
-            string w = FirstWord(tail);
-            bool keep = w == "I" || w.StartsWith("I'", StringComparison.Ordinal) ||
-                        (w.Length > 1 && w.ToUpperInvariant() == w);
-            if (!keep)
-                tail = tail.Substring(0, firstLetter) + char.ToLowerInvariant(tail[firstLetter]) + tail.Substring(firstLetter + 1);
-        }
-        return head + " " + tail;
+        return head + " " + Lower(cur);
     }
+
+    /// <summary>
+    /// The word after a false break is not a sentence start; lower-case it
+    /// unless it is the pronoun I or an all-caps token (acronym).
+    /// </summary>
+    private static string Lower(string s)
+    {
+        int firstLetter = 0;
+        while (firstLetter < s.Length && !char.IsLetter(s[firstLetter])) firstLetter++;
+        if (firstLetter >= s.Length) return s;
+        string w = FirstWord(s);
+        bool keep = w == "I" || w.StartsWith("I'", StringComparison.Ordinal) ||
+                    (w.Length > 1 && w.ToUpperInvariant() == w);
+        return keep ? s : s.Substring(0, firstLetter) + char.ToLowerInvariant(s[firstLetter]) + s.Substring(firstLetter + 1);
+    }
+
+    private static string Capitalize(string w) =>
+        w.Length == 0 ? w : char.ToUpperInvariant(w[0]) + w.Substring(1);
 
     private static string Core(string s) => Regex.Replace(s, @"^[^\w']+|[^\w']+$", "").Trim();
 
