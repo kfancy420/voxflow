@@ -498,18 +498,16 @@ public sealed class TrayAppContext : ApplicationContext
                 }
                 string withDictionary = PersonalDictionary.Apply(raw);
                 string cleaned = _settings.CleanupEnabled ? TextCleaner.Clean(withDictionary) : withDictionary;
-                // Never the clipboard: whatever the user has copied is theirs
-                // and may be irreplaceable. Hand the text over in a window.
-                string path = System.IO.Path.Combine(Settings.AppDataDirectory(), "recovered-take.txt");
-                File.WriteAllText(path, cleaned + Environment.NewLine);
+                // Into History only (same 24 h retention as every dictation).
+                // Never the clipboard, never a window: nothing on screen and
+                // nothing left on disk.
                 RunOnUi(() =>
                 {
                     HistoryStore.Add(raw, cleaned, "recovered");
                     TakeVault.Clear();
-                    Log.Info($"Recovered take ({cleaned.Length} chars) written to {path}");
-                    OpenInNotepad(path);
-                    _tray.ShowBalloonTip(10000, "VoxFlow — dictation recovered",
-                        "Your last dictation was saved. It has been opened in Notepad and is also in History.",
+                    Log.Info($"Recovered take ({cleaned.Length} chars) saved to History");
+                    _tray.ShowBalloonTip(8000, "VoxFlow — dictation recovered",
+                        "Your last dictation was saved to History (tray menu → Open History…).",
                         ToolTipIcon.Info);
                 });
             }
