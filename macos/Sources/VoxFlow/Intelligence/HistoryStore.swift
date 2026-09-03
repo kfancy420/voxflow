@@ -1,8 +1,18 @@
 import Foundation
 import os
 
-/// Persisted log of completed dictations, newest first, capped at 200
-/// entries. See Contracts.swift for the frozen shape.
+/// Persisted log of completed dictations, newest first. Bounded two ways: by
+/// age (`retentionHours`, 24 h by default) and by count (200).
+///
+/// The age bound is the one that matters. Everything dictated goes through
+/// here in plaintext — messages, invoices, client details — so it should not
+/// accumulate on disk indefinitely just because the entry count stayed under
+/// a cap.
+///
+/// Expiry is event-driven: enforced at startup, on every write, and whenever
+/// the entries are read (the History window). There is no background sweep,
+/// so on a Mac left running and unused an expired entry survives on disk
+/// until one of those happens. Same policy as the Windows build.
 final class HistoryStore {
     static let shared = HistoryStore()
 
@@ -13,11 +23,21 @@ final class HistoryStore {
     private let fileURL: URL
     private var storage: [HistoryEntry] = []
 
+    /// Hours to keep dictations for. Zero disables time-based expiry and
+    /// falls back to the count cap alone. Set from Preferences at startup.
+    var retentionHours: Int = Preferences.defaultHistoryRetentionHours
+
+    /// Entries newest first — pruned first, so what the user reads is never
+    /// staler than the retention policy claims.
     var entries: [HistoryEntry] {
+        prune()
         lock.lock()
         defer { lock.unlock() }
         return storage
     }
+
+    /// Number of entries currently retained (after pruning).
+    var count: Int { entries.count }
 
     init(fileURL: URL = HistoryStore.defaultFileURL()) {
         self.fileURL = fileURL
@@ -29,9 +49,7 @@ final class HistoryStore {
 
         lock.lock()
         storage.insert(entry, at: 0)
-        if storage.count > Self.capacity {
-            storage.removeLast(storage.count - Self.capacity)
-        }
+        storage = trim(storage)
         let snapshot = storage
         lock.unlock()
 
@@ -56,17 +74,61 @@ final class HistoryStore {
         persist(snapshot)
     }
 
+    /// Drops expired entries. Returns how many were removed.
+    @discardableResult
+    func prune() -> Int {
+        lock.lock()
+        let before = storage.count
+        let kept = trim(storage)
+        let removed = before - kept.count
+        if removed > 0 { storage = kept }
+        let snapshot = storage
+        lock.unlock()
+        if removed > 0 {
+            persist(snapshot)
+            Log.info("History pruned: \(removed) expired, \(kept.count) kept (retention \(retentionHours) h)")
+        }
+        return removed
+    }
+
     func clear() {
         lock.lock()
         storage.removeAll()
         lock.unlock()
         persist([])
+        Log.info("History cleared")
+    }
+
+    /// "24 hours", "7 days", "no time limit (200-entry cap only)".
+    var retentionDescription: String {
+        Self.describeRetention(hours: retentionHours)
+    }
+
+    static func describeRetention(hours: Int) -> String {
+        if hours <= 0 { return "no time limit (200-entry cap only)" }
+        if hours % 24 == 0 {
+            let days = hours / 24
+            return days == 1 ? "24 hours" : "\(days) days"
+        }
+        return hours == 1 ? "1 hour" : "\(hours) hours"
     }
 
     // MARK: - Persistence
 
     static func defaultFileURL() -> URL {
         PersonalDictionary.applicationSupportDirectory().appendingPathComponent("history.json")
+    }
+
+    private func trim(_ entries: [HistoryEntry]) -> [HistoryEntry] {
+        var kept = entries
+        if retentionHours > 0 {
+            let cutoff = Date().addingTimeInterval(-Double(retentionHours) * 3600)
+            kept = kept.filter { $0.date >= cutoff }
+        }
+        if kept.count > Self.capacity {
+            kept.removeLast(kept.count - Self.capacity)
+        }
+        return kept
     }
 
     private func load() {

@@ -111,7 +111,7 @@ final class HUDController {
     // MARK: - Public API (SPEC)
 
     func show() {
-        positionOnMainScreen()
+        positionOnActiveScreen()
         applyState(currentState)
         panel.orderFrontRegardless()
         waveformView.isRunning = (currentState == .recording)
@@ -167,11 +167,45 @@ final class HUDController {
             spinner.isHidden = true
             spinner.stopAnimation(nil)
             waveformView.isHidden = true
+        case .notice(let message):
+            statusLabel.stringValue = message
+            spinner.isHidden = true
+            spinner.stopAnimation(nil)
+            waveformView.isHidden = true
         }
+        resizeForLabel(state)
     }
 
-    private func positionOnMainScreen() {
-        guard let screen = NSScreen.main else { return }
+    /// The pill is sized for the waveform; a sentence-long error or notice
+    /// needs more room, so widen it for text states and snap back after.
+    private func resizeForLabel(_ state: FlowState) {
+        let wanted: CGFloat
+        switch state {
+        case .error, .notice:
+            let textWidth = statusLabel.attributedStringValue.size().width
+            wanted = min(max(Self.pillSize.width, textWidth + 48), 640)
+        default:
+            wanted = Self.pillSize.width
+        }
+        guard abs(panel.frame.width - wanted) > 0.5 else { return }
+        var frame = panel.frame
+        let centerX = frame.midX
+        frame.size.width = wanted
+        frame.origin.x = centerX - wanted / 2
+        panel.setFrame(frame, display: true)
+    }
+
+    /// Bottom-centre of the screen that holds the focused window — the app
+    /// about to receive the text — not the primary display, so on a
+    /// multi-monitor desk the HUD appears where the user is looking.
+    /// `NSScreen.main` is "the screen containing the window with keyboard
+    /// focus"; fall back to the mouse's screen, then the primary display.
+    private func positionOnActiveScreen() {
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.main
+            ?? NSScreen.screens.first(where: { $0.frame.contains(mouse) })
+            ?? NSScreen.screens.first
+        guard let screen else { return }
         let frame = screen.visibleFrame
         let x = frame.midX - Self.pillSize.width / 2
         let y = frame.minY + Self.bottomMargin

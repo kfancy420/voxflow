@@ -9,9 +9,22 @@ on-device: audio never leaves your Mac and there are no API fees.
 
 - **Hold-to-talk global hotkey** — Right ⌘, works in every app, never
   conflicts with normal shortcuts (⌘C etc. are ignored).
-- **On-device Whisper transcription** via WhisperKit (CoreML, Neural
-  Engine / Metal accelerated). Choice of Base / Small / Large-v3-Turbo
-  models in Settings.
+- **On-device Whisper transcription** via WhisperKit (CoreML, Metal
+  accelerated). Choice of Base / Small / Medium / Large-v3-Turbo models
+  in Settings; the menu marks which are already downloaded.
+- **Punctuation that survives fast speech** — sentence breaks are
+  restored at Whisper's segment boundaries, breathless run-ons are split
+  at spoken sentence openers, and a grammar-aware sanity pass removes
+  the breaks that cannot be right ("…the. The goal…"). Single-pass
+  decoding (no temperature fallback) keeps latency predictable.
+- **Silence guard** — quiet takes are rejected and Whisper's
+  silence hallucinations ("Thank you.", "Thanks for watching!") never
+  reach your document.
+- **Never loses a dictation** — every take is vaulted to disk before
+  transcription. If the speech engine dies it is rebuilt and the same
+  audio retried; if it hangs, VoxFlow restarts itself and the take is
+  transcribed into History (never pasted anywhere) on the next launch.
+  Crashes relaunch automatically via launchd.
 - **AI cleanup pass** using Apple's on-device Foundation model
   (macOS 26 + Apple Intelligence): removes filler words and false
   starts, fixes grammar and punctuation, adapts tone to the target app
@@ -21,14 +34,18 @@ on-device: audio never leaves your Mac and there are no API fees.
 - **Spoken commands** — "new line", "new paragraph".
 - **Personal dictionary** — your own trigger → replacement rules so
   names, brands, and jargon come out right every time.
-- **History window** — last 200 dictations with raw + cleaned text and
-  one-click copy.
-- **Recording HUD** — floating waveform pill while you speak; never
-  steals focus from the app you're dictating into.
-- **Menu-bar native** — no Dock icon, launch-at-login toggle, model
-  download progress, permission status indicators.
+- **History window** — recent dictations with raw + cleaned text and
+  one-click copy. Entries **expire after 24 hours** by default (configurable
+  in Settings → General; 200-entry cap on top) because everything you
+  dictate sits there in plain text.
+- **Recording HUD** — floating waveform pill on the screen you're working
+  on; never steals focus from the app you're dictating into.
+- **Menu-bar native** — no Dock icon, launch-at-login (enabled on first
+  run), model download progress, permission status indicators, and
+  maintenance actions: Restart Speech Engine, Recover Last Take, Restart
+  Hotkey Monitor, Clear History Now, Open Log.
 - **Clipboard-safe insertion** — pastes via a synthesized ⌘V and then
-  restores whatever was on your clipboard.
+  restores whatever was on your clipboard, images and files included.
 
 ## Install
 
@@ -41,9 +58,11 @@ Requires: Apple Silicon Mac, macOS 14+ (macOS 26 for AI cleanup),
 Xcode Command Line Tools (`xcode-select --install`).
 
 The script builds a release binary with SwiftPM, assembles
-`VoxFlow.app`, ad-hoc signs it, installs it to `/Applications`, and
-launches it. First launch downloads the Whisper model (~500 MB for the
-default Small model).
+`VoxFlow.app` (with its LaunchAgent), signs it, installs it to
+`/Applications`, and launches it. First launch downloads the Whisper
+model (~500 MB for the default Small model) and registers VoxFlow to
+launch at login and relaunch after a crash (System Settings → General →
+Login Items → "Allow in the Background").
 
 ### Permissions (one-time)
 
@@ -77,7 +96,20 @@ dictation goes to the wrong app, click into the right text field first
   pick the model again in Settings → Model to retry the download.
 - **AI polish greyed out / falling back** — Apple Intelligence must be
   enabled in System Settings on macOS 26+. Rules mode works everywhere.
+- **Something odd happened** — menu bar → **Open Log…** opens
+  `~/Library/Application Support/VoxFlow/voxflow.log`: hotkey and
+  permission state, model loads, every recording, transcription timings
+  (`LATENCY release→text …`), insertion results, faults and recoveries.
 - **Rebuild after editing code** — `bash scripts/install.sh` again.
+
+Headless checks, useful when tuning cleanup rules or when the pipeline
+seems dead:
+
+```bash
+/Applications/VoxFlow.app/Contents/MacOS/VoxFlow --selftest-clean transcript.txt   # cleanup pipeline only
+/Applications/VoxFlow.app/Contents/MacOS/VoxFlow --selftest-wav   speech.wav       # model + transcription + cleanup
+```
+Results print to the terminal and to `~/Library/Application Support/VoxFlow/selftest.txt`.
 
 ## Architecture
 
@@ -86,14 +118,21 @@ Single SwiftPM executable target. `Sources/VoxFlow/`:
 - `Core/` — `HotkeyMonitor` (CGEvent tap, right-⌘ keycode 54),
   `AudioRecorder` (AVAudioEngine → 16 kHz mono Float32),
   `TextInserter` (clipboard-preserving synthesized ⌘V).
-- `Intelligence/` — `Transcriber` (WhisperKit actor),
-  `TextCleaner` (rules pipeline + FoundationModels polish),
-  `PersonalDictionary`, `HistoryStore` (JSON in Application Support).
+- `Intelligence/` — `Transcriber` (WhisperKit actor: silence guard,
+  segment joiner, watchdog), `TextCleaner` (rules pipeline +
+  FoundationModels polish), `PunctuationSanity` + `RunOnSplitter`
+  (sentence-break inference, shared rules with Windows),
+  `PersonalDictionary`, `HistoryStore` (JSON in Application Support,
+  time-based expiry), `TakeVault` (pending take on disk).
 - `UI/` — `StatusBarController`, `HUDController` (non-activating
   NSPanel), `SettingsWindow` + `HistoryWindow` (SwiftUI).
-- `Support/` — `Contracts` (shared types), `Preferences`.
-- `AppDelegate` — owns the pipeline: press → record → release →
-  transcribe → dictionary → clean → insert → history.
+- `Support/` — `Contracts` (shared types), `Preferences`, `Log` (file
+  log), `ProcessLifecycle` (single instance, self-restart, launchd
+  hand-over), `SelfTest`.
+- `Resources/com.voxflow.app.plist` — bundled LaunchAgent
+  (`SMAppService.agent`): launch at login + relaunch after crash.
+- `AppDelegate` — owns the pipeline: press → record → release → vault →
+  transcribe (retry on fault) → dictionary → clean → insert → history.
 
 VoxFlow is an original implementation inspired by the Wispr Flow
 workflow; it shares no code or assets with Wispr.

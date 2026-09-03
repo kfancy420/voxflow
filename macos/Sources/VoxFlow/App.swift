@@ -10,6 +10,17 @@ struct VoxFlowApp {
     private static var delegate: AppDelegate?
 
     static func main() {
+        // Headless checks run without the UI and skip the single-instance
+        // rule, so they can be run against a Mac where VoxFlow is resident.
+        if let code = SelfTest.run(arguments: CommandLine.arguments) {
+            exit(code)
+        }
+        if let code = ProcessLifecycle.runAgentCommand(arguments: CommandLine.arguments) {
+            exit(code)
+        }
+
+        ProcessLifecycle.enforceSingleInstance()
+
         let app = NSApplication.shared
         let d = AppDelegate()
         delegate = d          // NSApplication.delegate is unretained; keep a strong ref.

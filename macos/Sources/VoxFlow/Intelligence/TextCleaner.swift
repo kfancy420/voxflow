@@ -68,8 +68,11 @@ final class TextCleaner {
     /// 4. spoken commands "new line" / "new paragraph" -> line breaks
     /// 5. normalize whitespace
     /// 6. fix spacing around punctuation
-    /// 7. capitalize sentence starts
-    /// 8. ensure terminal punctuation for multi-word output
+    /// 7. sentence-break sanity → run-on splitter → sanity again (see
+    ///    `PunctuationSanity` / `RunOnSplitter`; same order as Windows)
+    /// 8. collapse the doubled word a joined restart leaves behind
+    /// 9. capitalize sentence starts
+    /// 10. ensure terminal punctuation for multi-word output
     static func applyRules(_ input: String) -> String {
         var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return text }
@@ -80,6 +83,14 @@ final class TextCleaner {
         text = applySpokenCommands(text)
         text = normalizeWhitespace(text)
         text = fixSpaceBeforePunctuation(text)
+        // Sanity first resolves whisper's provisional segment breaks, so the
+        // splitter sees the true run-ons; sanity again vets the splitter.
+        text = PunctuationSanity.apply(text)
+        text = RunOnSplitter.split(text)
+        text = PunctuationSanity.apply(text)
+        // A joined restart ("the. The goal") leaves a doubled word.
+        text = collapseRepeatedWords(text)
+        text = replacing(text, pattern: #"[ \t]+"#, with: " ")
         text = capitalizeSentences(text)
         text = ensureTerminalPunctuation(text)
         return text

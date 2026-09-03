@@ -19,9 +19,11 @@ final class TextInserter {
     static let syntheticEventUserData: Int64 = 0x564F58
 
     /// Snapshot of everything on the pasteboard prior to insertion, so it
-    /// can be restored afterwards.
+    /// can be restored afterwards. Every type is copied as raw data — text,
+    /// images, files, rich text — not just the string flavours, so a
+    /// screenshot or a copied file survives a dictation.
     private struct SavedPasteboardState {
-        let itemStrings: [[NSPasteboard.PasteboardType: String]]
+        let items: [[NSPasteboard.PasteboardType: Data]]
     }
 
     /// The user's pasteboard contents from before the *first* insertion of a
@@ -82,6 +84,7 @@ final class TextInserter {
         pasteboard.setString(finalText, forType: .string)
 
         synthesizePaste()
+        Log.info("Inserted \(finalText.count) chars via ⌘V")
 
         let work = DispatchWorkItem {
             // asyncAfter blocks are nonisolated as far as the compiler is
@@ -106,30 +109,39 @@ final class TextInserter {
     // MARK: - Pasteboard save/restore
 
     private static func captureContents(of pasteboard: NSPasteboard) -> SavedPasteboardState {
-        let itemStrings: [[NSPasteboard.PasteboardType: String]] = (pasteboard.pasteboardItems ?? []).map { item in
-            var dict: [NSPasteboard.PasteboardType: String] = [:]
+        var kept = 0
+        let items: [[NSPasteboard.PasteboardType: Data]] = (pasteboard.pasteboardItems ?? []).map { item in
+            var dict: [NSPasteboard.PasteboardType: Data] = [:]
             for type in item.types {
-                if let value = item.string(forType: type) {
-                    dict[type] = value
+                // Some flavours are promised lazily by the owning app and
+                // refuse to materialise; keep whatever does come across.
+                if let data = item.data(forType: type) {
+                    dict[type] = data
+                    kept += 1
                 }
             }
             return dict
+        }.filter { !$0.isEmpty }
+        if !items.isEmpty {
+            Self.logger.debug("Saved pasteboard: \(items.count) item(s), \(kept) flavour(s)")
         }
-        return SavedPasteboardState(itemStrings: itemStrings)
+        return SavedPasteboardState(items: items)
     }
 
     private static func restore(_ saved: SavedPasteboardState, to pasteboard: NSPasteboard) {
         pasteboard.clearContents()
-        guard !saved.itemStrings.isEmpty else { return }
+        guard !saved.items.isEmpty else { return }
 
-        let items: [NSPasteboardItem] = saved.itemStrings.map { dict in
+        let items: [NSPasteboardItem] = saved.items.map { dict in
             let item = NSPasteboardItem()
-            for (type, value) in dict {
-                item.setString(value, forType: type)
+            for (type, data) in dict {
+                item.setData(data, forType: type)
             }
             return item
         }
-        pasteboard.writeObjects(items)
+        if !pasteboard.writeObjects(items) {
+            Log.warn("Could not restore the previous clipboard contents")
+        }
     }
 
     // MARK: - Keystroke synthesis

@@ -121,11 +121,27 @@ final class StatusBarController: NSObject {
 
         menu.addItem(.separator())
 
+        // Maintenance. Same set as the Windows tray menu.
+        menu.addItem(actionItem("Restart Speech Engine", #selector(restartEngine)))
+        menu.addItem(actionItem("Recover Last Take", #selector(recoverLastTake)))
+        menu.addItem(actionItem("Restart Hotkey Monitor", #selector(restartHotkey)))
+        menu.addItem(actionItem("Clear History Now", #selector(clearHistoryNow)))
+        menu.addItem(actionItem("Open Log…", #selector(openLog)))
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit VoxFlow", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
+        menu.delegate = self
         return menu
+    }
+
+    private func actionItem(_ title: String, _ selector: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = self
+        return item
     }
 
     // MARK: - Actions
@@ -160,6 +176,33 @@ final class StatusBarController: NSObject {
         refreshCheckmarks()
     }
 
+    @objc private func restartEngine() { post(.restartEngine) }
+    @objc private func recoverLastTake() { post(.recoverLastTake) }
+    @objc private func restartHotkey() { post(.restartHotkey) }
+
+    private func post(_ command: PipelineCommand) {
+        NotificationCenter.default.post(name: .voxFlowCommand, object: nil, userInfo: ["command": command.rawValue])
+    }
+
+    @objc private func openLog() {
+        NSWorkspace.shared.open(Log.fileURL)
+    }
+
+    @objc private func clearHistoryNow() {
+        let count = HistoryStore.shared.count
+        let alert = NSAlert()
+        alert.messageText = "Delete all \(count) stored dictation\(count == 1 ? "" : "s")?"
+        alert.informativeText = "History expires automatically after \(HistoryStore.shared.retentionDescription)."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            HistoryStore.shared.clear()
+            NotificationCenter.default.post(name: .voxFlowPrefsChanged, object: nil)
+        }
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
@@ -185,6 +228,8 @@ final class StatusBarController: NSObject {
         let choice = Preferences.shared.modelChoice
         for (c, item) in modelMenuItems {
             item.state = (c == choice) ? .on : .off
+            // Make it obvious which models are already on disk.
+            item.title = c.isDownloaded ? c.displayName : c.displayName + " — not downloaded"
         }
         launchAtLoginItem.state = Preferences.shared.launchAtLogin ? .on : .off
     }
@@ -205,13 +250,14 @@ final class StatusBarController: NSObject {
         case .cleaning: return "Polishing…"
         case .inserting: return "Inserting…"
         case .error(let message): return "Error: \(message)"
+        case .notice(let message): return message
         }
     }
 
     private static func icon(for state: FlowState) -> NSImage? {
         let (symbolName, description): (String, String) = {
             switch state {
-            case .idle: return ("mic", "VoxFlow — Idle")
+            case .idle, .notice: return ("mic", "VoxFlow — Idle")
             case .recording: return ("mic.fill", "VoxFlow — Recording")
             case .transcribing, .cleaning, .inserting: return ("waveform", "VoxFlow — Working")
             case .error: return ("exclamationmark.triangle", "VoxFlow — Error")
@@ -220,5 +266,13 @@ final class StatusBarController: NSObject {
         let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)
         image?.isTemplate = true
         return image
+    }
+}
+
+extension StatusBarController: NSMenuDelegate {
+    /// Download markers and the login-item state can change behind our back;
+    /// re-read them each time the menu opens.
+    func menuWillOpen(_ menu: NSMenu) {
+        refreshCheckmarks()
     }
 }

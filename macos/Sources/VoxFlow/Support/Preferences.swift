@@ -13,7 +13,17 @@ final class Preferences {
         static let playSounds = "playSounds"
         static let launchAtLogin = "launchAtLogin"
         static let insertTrailingSpace = "insertTrailingSpace"
+        static let historyRetentionHours = "historyRetentionHours"
+        static let autoStartConfigured = "autoStartConfigured"
     }
+
+    /// Bundled LaunchAgent (Contents/Library/LaunchAgents/com.voxflow.app.plist).
+    /// Unlike `SMAppService.mainApp`, an agent can carry `KeepAlive`, which is
+    /// what relaunches VoxFlow after a crash.
+    private static let agent = SMAppService.agent(plistName: "com.voxflow.app.plist")
+
+    /// Default history retention, in hours (same as Windows).
+    static let defaultHistoryRetentionHours = 24
 
     private let logger = Logger(subsystem: "com.voxflow.app", category: "Preferences")
     private let defaults: UserDefaults
@@ -24,7 +34,9 @@ final class Preferences {
             Keys.cleanupMode: CleanupMode.ai.rawValue,
             Keys.modelChoice: WhisperModelChoice.smallEn.rawValue,
             Keys.playSounds: true,
-            Keys.insertTrailingSpace: true
+            Keys.insertTrailingSpace: true,
+            Keys.historyRetentionHours: Self.defaultHistoryRetentionHours,
+            Keys.autoStartConfigured: false
         ])
     }
 
@@ -66,29 +78,79 @@ final class Preferences {
         }
     }
 
-    /// Backed by `SMAppService.mainApp` rather than UserDefaults directly —
+    /// How long dictation history is kept, in hours. Everything dictated is
+    /// stored in plaintext, so it expires by default rather than
+    /// accumulating. 0 keeps entries until the 200-entry cap evicts them.
+    var historyRetentionHours: Int {
+        get {
+            guard defaults.object(forKey: Keys.historyRetentionHours) != nil else {
+                return Self.defaultHistoryRetentionHours
+            }
+            return max(0, defaults.integer(forKey: Keys.historyRetentionHours))
+        }
+        set {
+            defaults.set(max(0, newValue), forKey: Keys.historyRetentionHours)
+            postChange()
+        }
+    }
+
+    /// True once launch-at-login has been enabled automatically on first run.
+    /// Later runs only correct a stale registration; if the user has turned
+    /// it off deliberately, it stays off.
+    var autoStartConfigured: Bool {
+        get { defaults.bool(forKey: Keys.autoStartConfigured) }
+        set { defaults.set(newValue, forKey: Keys.autoStartConfigured) }
+    }
+
+    /// Backed by the bundled LaunchAgent rather than UserDefaults directly —
     /// the system is the source of truth for whether the login item is
     /// actually registered.
     var launchAtLogin: Bool {
         get {
-            SMAppService.mainApp.status == .enabled
+            Self.agent.status == .enabled
         }
         set {
             if newValue {
+                // Migrate away from the plain login item earlier builds used.
+                if SMAppService.mainApp.status == .enabled {
+                    try? SMAppService.mainApp.unregister()
+                }
                 do {
-                    try SMAppService.mainApp.register()
+                    try Self.agent.register()
+                    Log.info("Launch agent registered (status=\(Self.describe(Self.agent.status)))")
                 } catch {
-                    logger.error("Failed to register launch-at-login: \(error.localizedDescription, privacy: .public)")
+                    logger.error("Failed to register launch agent: \(error.localizedDescription, privacy: .public)")
+                    Log.error("Failed to register launch agent", error)
                 }
             } else {
-                do {
-                    try SMAppService.mainApp.unregister()
-                } catch {
-                    logger.error("Failed to unregister launch-at-login: \(error.localizedDescription, privacy: .public)")
+                if Self.agent.status != .notRegistered {
+                    do {
+                        try Self.agent.unregister()
+                        Log.info("Launch agent unregistered")
+                    } catch {
+                        logger.error("Failed to unregister launch agent: \(error.localizedDescription, privacy: .public)")
+                        Log.warn("Failed to unregister launch agent: \(error.localizedDescription)")
+                    }
+                }
+                if SMAppService.mainApp.status != .notRegistered {
+                    try? SMAppService.mainApp.unregister()
                 }
             }
             defaults.set(newValue, forKey: Keys.launchAtLogin)
             postChange()
+        }
+    }
+
+    /// Human-readable agent status for the log.
+    static var launchAgentStatus: String { describe(agent.status) }
+
+    private static func describe(_ status: SMAppService.Status) -> String {
+        switch status {
+        case .notRegistered: return "not registered"
+        case .enabled: return "enabled"
+        case .requiresApproval: return "requires approval (System Settings → General → Login Items)"
+        case .notFound: return "not found"
+        @unknown default: return "unknown"
         }
     }
 

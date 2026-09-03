@@ -31,6 +31,9 @@ final class HotkeyMonitor {
     private var runLoopSource: CFRunLoopSource?
     private var isRightCommandDown = false
 
+    /// True while an event tap is installed.
+    var isRunning: Bool { eventTap != nil }
+
     init() {}
 
     // Note: deinit intentionally does not call `stop()` — this type is
@@ -115,6 +118,7 @@ final class HotkeyMonitor {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             let reason = (type == .tapDisabledByTimeout) ? "timeout" : "user input"
             Self.logger.notice("Event tap disabled (\(reason, privacy: .public)); re-enabling")
+            Log.warn("Event tap disabled (\(reason)); re-enabling")
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }

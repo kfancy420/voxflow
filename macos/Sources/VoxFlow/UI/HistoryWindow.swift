@@ -32,7 +32,7 @@ struct HistoryView: View {
             Divider()
 
             HStack {
-                Text("\(entries.count) item\(entries.count == 1 ? "" : "s")")
+                Text("\(entries.count) item\(entries.count == 1 ? "" : "s") · expires after \(HistoryStore.shared.retentionDescription)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
@@ -136,6 +136,7 @@ private struct HistoryRow: View {
 
     private func appDisplayName(for bundleID: String?) -> String {
         guard let bundleID else { return "Unknown app" }
+        if bundleID == "recovered" { return "Recovered after restart" }
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
             return bundleID
         }

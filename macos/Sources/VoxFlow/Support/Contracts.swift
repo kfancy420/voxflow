@@ -1,8 +1,8 @@
 import Foundation
 
 // MARK: - Shared types used across all VoxFlow modules.
-// These definitions are FROZEN. Component files must build against exactly
-// these shapes. Do not redefine these types elsewhere.
+// Component files must build against exactly these shapes. Do not redefine
+// these types elsewhere; extend them here and update every switch.
 
 /// The app-wide pipeline state, driven by AppDelegate, observed by UI.
 public enum FlowState: Equatable {
@@ -12,6 +12,9 @@ public enum FlowState: Equatable {
     case cleaning
     case inserting
     case error(String)
+    /// Transient informational message in the HUD ("Last dictation recovered
+    /// to History"); the menu-bar icon stays idle.
+    case notice(String)
 }
 
 /// How aggressively transcripts are cleaned before insertion.
@@ -63,17 +66,42 @@ public struct DictionaryEntry: Codable, Identifiable, Equatable {
 }
 
 /// Whisper model choices surfaced in Settings.
+/// Ordered fastest → most accurate. The Windows benchmark (see the top-level
+/// README) found base.en alone produces outright garbage on technical
+/// vocabulary, medium.en is the best English model, and large-v3-turbo is no
+/// more accurate than medium.en for English — it is offered for
+/// non-English dictation.
 public enum WhisperModelChoice: String, CaseIterable {
     case baseEn = "base.en"
     case smallEn = "small.en"
+    case mediumEn = "medium.en"
     case largeV3Turbo = "large-v3_turbo"
 
     public var displayName: String {
         switch self {
-        case .baseEn: return "Base (fastest, ~150 MB)"
-        case .smallEn: return "Small (balanced, ~500 MB)"
-        case .largeV3Turbo: return "Large v3 Turbo (best, ~1.6 GB)"
+        case .baseEn: return "Base — fastest (~150 MB)"
+        case .smallEn: return "Small — balanced (~500 MB)"
+        case .mediumEn: return "Medium — most accurate English (~1.5 GB)"
+        case .largeV3Turbo: return "Large v3 Turbo — multilingual (~1.6 GB)"
         }
+    }
+
+    /// Where WhisperKit's Hugging Face helper stores CoreML models.
+    public static var modelsDirectory: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+        return docs.appendingPathComponent("huggingface/models/argmaxinc/whisperkit-coreml", isDirectory: true)
+    }
+
+    /// On-disk folder for this variant (`openai_whisper-<variant>`).
+    public var modelFolder: URL {
+        Self.modelsDirectory.appendingPathComponent("openai_whisper-\(rawValue)", isDirectory: true)
+    }
+
+    /// True once the compiled decoder is on disk — good enough to mark the
+    /// menu, and the check is a single stat.
+    public var isDownloaded: Bool {
+        FileManager.default.fileExists(atPath: modelFolder.appendingPathComponent("TextDecoder.mlmodelc").path)
     }
 }
 
@@ -86,6 +114,17 @@ public extension Notification.Name {
     static let voxFlowAudioLevel = Notification.Name("VoxFlowAudioLevel")
     /// Posted when the personal dictionary or preferences change and dependents should reload.
     static let voxFlowPrefsChanged = Notification.Name("VoxFlowPrefsChanged")
+    /// Posted by the menu bar to ask the pipeline owner (AppDelegate) to do
+    /// something: userInfo["command"] is a `PipelineCommand` raw value.
+    static let voxFlowCommand = Notification.Name("VoxFlowCommand")
+}
+
+/// Maintenance actions the menu bar can request from the pipeline owner
+/// without referencing it directly (SPEC: UI talks via notifications).
+public enum PipelineCommand: String {
+    case restartEngine
+    case recoverLastTake
+    case restartHotkey
 }
 
 /// Reference box so FlowState (an enum with payload) can ride in userInfo.

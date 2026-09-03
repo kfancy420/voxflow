@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Bundled LaunchAgent registered through SMAppService.agent(plistName:).
+         Launch at login, and — the part SMAppService.mainApp cannot do —
+         relaunch after any crash: KeepAlive/SuccessfulExit=false restarts the
+         app whenever it exits with a non-zero status (a native fault, or the
+         deliberate self-restart when the speech engine hangs) and leaves it
+         down after a clean Quit. -->
+    <key>Label</key>
+    <string>com.voxflow.app</string>
+    <!-- An absolute path, not BundleProgram: launchd on macOS 26 refuses the
+         bundle-relative form for an agent that points at the app's own main
+         executable ("108: Invalid path"). The app only registers the agent
+         when it is running from /Applications (ProcessLifecycle), so the
+         path is always right. -->
+    <key>Program</key>
+    <string>/Applications/VoxFlow.app/Contents/MacOS/VoxFlow</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>VOXFLOW_LAUNCHD</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>

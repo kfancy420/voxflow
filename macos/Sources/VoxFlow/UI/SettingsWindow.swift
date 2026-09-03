@@ -35,7 +35,7 @@ final class WindowManager {
     func showSettings() {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 480, height: 360),
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
@@ -45,7 +45,7 @@ final class WindowManager {
             window.center()
             let root = SettingsView(statusRelay: statusRelay)
             window.contentViewController = NSHostingController(rootView: root)
-            window.contentMinSize = NSSize(width: 480, height: 360)
+            window.contentMinSize = NSSize(width: 520, height: 460)
             settingsWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -97,7 +97,7 @@ struct SettingsView: View {
                 .tabItem { Text("Dictionary") }
         }
         .padding(20)
-        .frame(minWidth: 480, minHeight: 360)
+        .frame(minWidth: 520, minHeight: 460)
     }
 }
 
@@ -108,6 +108,7 @@ private struct GeneralSettingsTab: View {
     @State private var playSounds: Bool = Preferences.shared.playSounds
     @State private var insertTrailingSpace: Bool = Preferences.shared.insertTrailingSpace
     @State private var launchAtLogin: Bool = Preferences.shared.launchAtLogin
+    @State private var historyRetentionHours: Int = Preferences.shared.historyRetentionHours
 
     @State private var micStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @State private var accessibilityGranted: Bool = AXIsProcessTrusted()
@@ -143,6 +144,22 @@ private struct GeneralSettingsTab: View {
                     }
             }
 
+            Section("History") {
+                Picker("Keep dictations for", selection: $historyRetentionHours) {
+                    Text("1 hour").tag(1)
+                    Text("24 hours").tag(24)
+                    Text("7 days").tag(168)
+                    Text("30 days").tag(720)
+                    Text("Forever (200-entry cap)").tag(0)
+                }
+                .onChange(of: historyRetentionHours) { _, newValue in
+                    Preferences.shared.historyRetentionHours = newValue
+                }
+                Text("Everything you dictate is stored in plain text in History, so it expires by default. Expiry runs at launch, after each dictation, and when History is opened.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+
             Section("Permissions") {
                 HStack {
                     permissionDot(granted: micStatus == .authorized)
@@ -167,6 +184,7 @@ private struct GeneralSettingsTab: View {
             playSounds = Preferences.shared.playSounds
             insertTrailingSpace = Preferences.shared.insertTrailingSpace
             launchAtLogin = Preferences.shared.launchAtLogin
+            historyRetentionHours = Preferences.shared.historyRetentionHours
         }
         .onReceive(permissionTimer) { _ in
             micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -202,14 +220,14 @@ private struct ModelSettingsTab: View {
             Section {
                 Picker("Whisper model", selection: $modelChoice) {
                     ForEach(WhisperModelChoice.allCases, id: \.self) { choice in
-                        Text(choice.displayName).tag(choice)
+                        Text(choice.isDownloaded ? choice.displayName : choice.displayName + " — not downloaded").tag(choice)
                     }
                 }
                 .onChange(of: modelChoice) { _, newValue in
                     Preferences.shared.modelChoice = newValue
                 }
 
-                Text("Changing the model triggers a download the next time you dictate, if it hasn't been fetched yet.")
+                Text("Switching starts the download in the background; dictation stays on the current model until the new one is ready. Medium is the most accurate English model but takes a few times longer per take than Small on Apple Silicon; Large v3 Turbo is for non-English dictation.")
                     .font(.footnote)
                     .foregroundColor(.secondary)
             }

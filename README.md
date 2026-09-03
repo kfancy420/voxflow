@@ -20,15 +20,20 @@ bash scripts/install.sh
 ```
 Requires Apple Silicon, macOS 14+ (macOS 26 for the on-device AI cleanup pass),
 and the Xcode Command Line Tools. Grant Accessibility + Microphone when asked.
-Hold **Right ⌘** to dictate. Enable "Launch at Login" from the menu-bar icon to
-keep it always running.
+Hold **Right ⌘** to dictate. On first launch it registers itself to launch at
+login (and to relaunch after a crash) and lives in the menu bar.
 
 ## How it works
 
 Both versions share the same pipeline: global hotkey (hold-to-talk) → mic
-capture at 16 kHz → on-device Whisper transcription → personal-dictionary
-substitutions → cleanup (filler/punctuation, spoken "new line"/"new paragraph"
-commands) → clipboard-preserving paste into the focused app → history log.
+capture at 16 kHz → take vaulted to disk → on-device Whisper transcription
+(silence guard, watchdog, retry on engine fault) → personal-dictionary
+substitutions → cleanup (filler/punctuation, sentence-break inference for fast
+speech, spoken "new line"/"new paragraph" commands) → clipboard-preserving
+paste into the focused app → history log (24-hour expiry).
+
+The punctuation layers (`PunctuationSanity`, `RunOnSplitter`, the segment
+joiner) are deliberately the same rules in C# and Swift; tune them together.
 
 - **macOS** — Swift / AppKit / SwiftUI, [WhisperKit](https://github.com/argmaxinc/WhisperKit)
   (CoreML, Neural Engine / Metal). Optional AI polish via Apple's on-device
@@ -41,8 +46,10 @@ commands) → clipboard-preserving paste into the focused app → history log.
 
 Hold-to-talk global hotkey · on-device transcription (no cloud) · filler-word
 and punctuation cleanup · spoken line-break commands · personal dictionary ·
-dictation history · recording HUD · menu-bar / system-tray native · launch at
-login / start with Windows · clipboard-safe insertion.
+dictation history (expires after 24 h) · recording HUD · menu-bar / system-tray
+native · launch at login / start with Windows, relaunch after crash ·
+clipboard-safe insertion (text, images, files) · never loses a take (vault +
+recovery) · file log and headless self-tests.
 
 VoxFlow is an original implementation inspired by the Wispr Flow workflow; it
 shares no code or assets with Wispr.
@@ -121,13 +128,20 @@ What does survive scrutiny:
   is free — identical WER, a third of the size, and faster. Only the
   quantised build is offered, for non-English dictation.
 
-Default is `medium.en`; switch from the tray menu, which marks which models
-are already on disk and downloads on demand.
+Default is `medium.en` on Windows; switch from the tray menu, which marks which
+models are already on disk and downloads on demand.
+
+The macOS build offers the same four choices (WhisperKit CoreML builds) but
+defaults to `small.en`: without a discrete GPU the extra accuracy of
+`medium.en` costs a few times the latency per take on Apple Silicon, which is
+very noticeable in a hold-and-release workflow. Pick Medium from the menu if
+accuracy on technical vocabulary matters more to you than the wait.
 
 ### History retention
 
-Every dictation is written to `%APPDATA%\VoxFlow\history.json` in plaintext.
-On Windows it **expires after 24 hours** by default, on top of the existing
+Every dictation is written to `%APPDATA%\VoxFlow\history.json` (Windows) or
+`~/Library/Application Support/VoxFlow/history.json` (macOS) in plaintext. It
+**expires after 24 hours** by default on both platforms, on top of the existing
 200-entry cap.
 
 Expiry is event-driven: it runs at startup, on every new dictation, and when
@@ -135,19 +149,17 @@ History is opened from the tray. There is no background sweep, so on a machine
 left running and unused an expired entry stays on disk until the next of those
 happens — in practice, until you next dictate or restart.
 
-Change it with `HistoryRetentionHours` in `%APPDATA%\VoxFlow\settings.json`;
-`0` disables time-based expiry and leaves only the count cap. **Clear History
-Now** in the tray menu deletes the file immediately.
-
-> The macOS build does not currently expire history — `HistoryStore.swift`
-> enforces `capacity = 200` and nothing else. The two platforms are not yet at
-> parity on this.
+Change it with `HistoryRetentionHours` in `%APPDATA%\VoxFlow\settings.json`
+on Windows, or Settings → General → "Keep dictations for" on macOS; `0`
+disables time-based expiry and leaves only the count cap. **Clear History
+Now** in the tray / menu-bar menu deletes everything immediately.
 
 ### Troubleshooting
 
-VoxFlow writes a log to `%APPDATA%\VoxFlow\voxflow.log` (also reachable via
-**Open Log…** in the tray menu). It records hook installation, model loading,
-each recording, transcription timings and insertion results.
+VoxFlow writes a log to `%APPDATA%\VoxFlow\voxflow.log` (Windows) or
+`~/Library/Application Support/VoxFlow/voxflow.log` (macOS), also reachable via
+**Open Log…** in the tray / menu-bar menu. It records hook installation, model
+loading, each recording, transcription timings and insertion results.
 
 Headless checks, useful when the hotkey or audio seems dead:
 
@@ -155,5 +167,21 @@ Headless checks, useful when the hotkey or audio seems dead:
 VoxFlow.exe --selftest-wav  C:\path\to\speech.wav   :: model + transcription + cleanup
 VoxFlow.exe --selftest-mic  5                       :: capture device, level, transcript
 VoxFlow.exe --selftest-insert "hello world"         :: paste into the focused window
+VoxFlow.exe --selftest-clean transcript.txt         :: cleanup pipeline on a raw transcript
 ```
-Results are written to `%APPDATA%\VoxFlow\selftest.txt`.
+```bash
+/Applications/VoxFlow.app/Contents/MacOS/VoxFlow --selftest-wav   speech.wav
+/Applications/VoxFlow.app/Contents/MacOS/VoxFlow --selftest-clean transcript.txt
+```
+Results are written to `%APPDATA%\VoxFlow\selftest.txt` /
+`~/Library/Application Support/VoxFlow/selftest.txt`.
+
+### Crash and hang recovery
+
+The take being transcribed is always on disk first (`pending-take.wav`). An
+engine that returns nothing is rebuilt and the same audio retried; an engine
+that never returns trips a watchdog and the app restarts itself. Whatever was
+pending is transcribed on the next launch **into History only** — never onto
+the clipboard or into whatever window happens to be focused. Windows relaunches
+after any crash via `RegisterApplicationRestart`; macOS via a bundled
+LaunchAgent (`KeepAlive` on unsuccessful exit) registered with `SMAppService`.

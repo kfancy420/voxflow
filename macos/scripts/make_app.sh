@@ -20,6 +20,12 @@ mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 cp "${BIN}" "${APP}/Contents/MacOS/VoxFlow"
 cp Resources/Info.plist "${APP}/Contents/Info.plist"
 
+# LaunchAgent registered by the app through SMAppService.agent(plistName:).
+# Provides launch-at-login *and* relaunch-after-crash (KeepAlive), which the
+# plain SMAppService.mainApp login item cannot.
+mkdir -p "${APP}/Contents/Library/LaunchAgents"
+cp Resources/com.voxflow.app.plist "${APP}/Contents/Library/LaunchAgents/com.voxflow.app.plist"
+
 # SwiftPM emits dependency resource bundles (e.g. WhisperKit's) next to the
 # executable; Bundle.module looks for them in Contents/Resources at runtime.
 shopt -s nullglob
