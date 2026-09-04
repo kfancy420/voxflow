@@ -322,7 +322,7 @@ public sealed class Transcriber : IDisposable
         // Resolve whisper's phantom lists and the provisional segment breaks
         // here so the raw transcript (History, cleanup-off mode) never
         // carries either, and the dictionary sees the words rejoined.
-        string text = PunctuationSanity.Apply(ListSanity.Apply(StripArtifacts(rawText)));
+        string text = PunctuationSanity.Apply(ListSanity.Apply(QuoteSanity.Apply(StripArtifacts(rawText))));
 
         if (rms < QuietRms && IsLikelyHallucination(text))
         {

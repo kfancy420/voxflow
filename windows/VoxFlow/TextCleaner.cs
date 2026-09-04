@@ -57,7 +57,9 @@ public static class TextCleaner
             result.Append(ch);
             if (ch is '.' or '!' or '?' or '\n')
                 capitalizeNext = true;
-            else if (!char.IsWhiteSpace(ch))
+            // A closing quote or bracket after the full stop ('do." yeah')
+            // does not start the next sentence; look through it.
+            else if (!char.IsWhiteSpace(ch) && ch is not ('"' or '”' or '\'' or ')' or ']'))
                 capitalizeNext = false;
         }
         return result.ToString();
@@ -69,7 +71,9 @@ public static class TextCleaner
         if (trimmed.Length == 0) return trimmed;
         int wordCount = trimmed.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
         if (wordCount < 3) return trimmed;
-        char last = trimmed[^1];
+        // Look past a closing quote or bracket: '…creators."' is terminated.
+        string core = trimmed.TrimEnd('"', '”', '\'', ')', ']');
+        char last = core.Length > 0 ? core[^1] : trimmed[^1];
         if (last is '.' or '!' or '?') return trimmed;
         return trimmed + ".";
     }

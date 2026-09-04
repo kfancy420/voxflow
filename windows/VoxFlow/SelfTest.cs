@@ -45,9 +45,9 @@ internal static class SelfTest
                     // Runs the cleanup pipeline on a text file: punctuation
                     // rules can be tuned against real transcripts offline.
                     report.AppendLine("MODE --selftest-clean " + args[1]);
-                    // Same order as a live take: list sanity → dictionary → cleaner.
+                    // Same order as a live take: quote sanity → list sanity → dictionary → cleaner.
                     report.AppendLine("CLEANED : " + TextCleaner.Clean(
-                        PersonalDictionary.Apply(ListSanity.Apply(File.ReadAllText(args[1])))));
+                        PersonalDictionary.Apply(ListSanity.Apply(QuoteSanity.Apply(File.ReadAllText(args[1]))))));
                     break;
                 case "--selftest-insert":
                     exitCode = InsertText(args.Length > 1 ? args[1] : "VoxFlow insertion test", report);
