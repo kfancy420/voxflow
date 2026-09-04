@@ -189,6 +189,7 @@ public sealed class Transcriber : IDisposable
             var warmup = new float[8000];
             await foreach (var _ in _processor.ProcessAsync(warmup)) { }
             warmSw.Stop();
+            ListSanity.Warm();
 
             _loadedModel = model;
             IsReady = true;
@@ -318,9 +319,10 @@ public sealed class Transcriber : IDisposable
                 "The speech engine lost its GPU context; reloading it and retrying your dictation.", hung: false);
         }
 
-        // Resolve the provisional segment breaks here so the raw transcript
-        // (History, cleanup-off mode) never carries the marker.
-        string text = PunctuationSanity.Apply(StripArtifacts(rawText));
+        // Resolve whisper's phantom lists and the provisional segment breaks
+        // here so the raw transcript (History, cleanup-off mode) never
+        // carries either, and the dictionary sees the words rejoined.
+        string text = PunctuationSanity.Apply(ListSanity.Apply(StripArtifacts(rawText)));
 
         if (rms < QuietRms && IsLikelyHallucination(text))
         {

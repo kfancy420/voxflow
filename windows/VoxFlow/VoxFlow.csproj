@@ -9,7 +9,7 @@
     <AssemblyName>VoxFlow</AssemblyName>
     <RootNamespace>VoxFlow</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>1.4.0</Version>
+    <Version>1.4.1</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
 
     <!--
@@ -27,6 +27,12 @@
     -->
     <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Common-English lexicon for ListSanity (wordfreq top 20k, first
+         names removed). Embedded in the exe, never written to disk. -->
+    <EmbeddedResource Include="CommonWords.txt" LogicalName="VoxFlow.CommonWords.txt" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />

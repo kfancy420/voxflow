@@ -126,7 +126,9 @@ public static class PersonalDictionary
         foreach (var pair in entries.OrderByDescending(p => p.Key.Length))
         {
             if (string.IsNullOrWhiteSpace(pair.Key)) continue;
-            string escaped = Regex.Escape(pair.Key);
+            // A space in a multi-word key also matches whisper's phantom comma
+            // ("vitality, massage therapy" → "Vitality Massage therapy").
+            string escaped = Regex.Escape(pair.Key).Replace(@"\ ", @",?\s+");
             string pattern = (char.IsLetterOrDigit(pair.Key[0]) ? @"\b" : "")
                 + escaped
                 + (char.IsLetterOrDigit(pair.Key[^1]) ? @"\b" : "");
