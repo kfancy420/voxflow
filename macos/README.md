@@ -49,13 +49,22 @@ on-device: audio never leaves your Mac and there are no API fees.
 
 ## Install
 
+From a fresh Mac, in Terminal:
+
 ```bash
-cd voxflow
-bash scripts/install.sh
+xcode-select --install 2>/dev/null; git clone https://github.com/kfancy420/voxflow.git && cd voxflow/macos && bash scripts/install.sh
 ```
 
+If the command-line tools weren't installed yet, a dialog appears — click
+*Install*, wait for it, then run the line again. Already have the repo?
+Just `cd voxflow/macos && bash scripts/install.sh`; to update,
+`git pull` first.
+
 Requires: Apple Silicon Mac, macOS 14+ (macOS 26 for AI cleanup),
-Xcode Command Line Tools (`xcode-select --install`).
+Xcode Command Line Tools (`xcode-select --install`). No admin password
+is needed; nothing is installed outside `/Applications/VoxFlow.app`,
+`~/Library/Application Support/VoxFlow` and the model cache in
+`~/Documents/huggingface`.
 
 The script builds a release binary with SwiftPM, assembles
 `VoxFlow.app` (with its LaunchAgent), signs it, installs it to

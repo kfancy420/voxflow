@@ -13,15 +13,31 @@ On first launch it registers itself to start with Windows and lives silently
 in the system tray — you never have to launch it again. Hold **Right Ctrl** to
 dictate. First run downloads a ~470 MB Whisper model (progress in the tray).
 
-**macOS (build from source):**
+**macOS (one command, builds from source):** open Terminal and paste:
+
 ```bash
-cd macos
-bash scripts/install.sh
+xcode-select --install 2>/dev/null; git clone https://github.com/kfancy420/voxflow.git && cd voxflow/macos && bash scripts/install.sh
 ```
-Requires Apple Silicon, macOS 14+ (macOS 26 for the on-device AI cleanup pass),
-and the Xcode Command Line Tools. Grant Accessibility + Microphone when asked.
-Hold **Right ⌘** to dictate. On first launch it registers itself to launch at
-login (and to relaunch after a crash) and lives in the menu bar.
+
+That installs Apple's command-line tools if they're missing (a dialog appears —
+click *Install*, wait for it to finish, then run the line again), downloads
+this repo, builds `VoxFlow.app`, puts it in `/Applications` and launches it.
+The first build takes a couple of minutes (it fetches WhisperKit); no password
+is needed. Prefer not to use git? Click the green **Code** button above →
+**Download ZIP**, unzip it, then run
+`bash ~/Downloads/voxflow-main/macos/scripts/install.sh` — the command-line
+tools are still required to build.
+
+Requires an Apple Silicon Mac on macOS 14+ (macOS 26 for the on-device AI
+cleanup pass). When asked, grant **Microphone** and **Accessibility**; the app
+picks the grants up within a few seconds, no restart. Hold **Right ⌘** to
+dictate. First run downloads a ~500 MB Whisper model (progress in the menu-bar
+dropdown). It registers itself to launch at login (and to relaunch after a
+crash) and lives in the menu bar — you never have to launch it again.
+
+To update later: `cd voxflow && git pull && bash macos/scripts/install.sh`.
+See [`macos/README.md`](macos/README.md) for permissions, usage and
+troubleshooting.
 
 ## How it works
 
