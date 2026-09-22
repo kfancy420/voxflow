@@ -44,12 +44,16 @@ troubleshooting.
 Both versions share the same pipeline: global hotkey (hold-to-talk) → mic
 capture at 16 kHz → take vaulted to disk → on-device Whisper transcription
 (silence guard, watchdog, retry on engine fault) → personal-dictionary
-substitutions → cleanup (filler/punctuation, sentence-break inference for fast
+substitutions → cleanup (filler/punctuation, run-on splitting for fast
 speech, spoken "new line"/"new paragraph" commands) → clipboard-preserving
 paste into the focused app → history log (24-hour expiry).
 
-The punctuation layers (`PunctuationSanity`, `RunOnSplitter`, the segment
-joiner) are deliberately the same rules in C# and Swift; tune them together.
+Punctuation is decided over the finished take, never from pauses: whisper's
+segments (its pauses) are joined with a space, whisper's own punctuation is
+kept, and only then does the cleanup pass split genuine run-ons and remove
+breaks that cannot be grammatical. The punctuation layers
+(`PunctuationSanity`, `RunOnSplitter`, the segment joiner) are deliberately
+the same rules in C# and Swift; tune them together.
 
 - **macOS** — Swift / AppKit / SwiftUI, [WhisperKit](https://github.com/argmaxinc/WhisperKit)
   (CoreML, Neural Engine / Metal). Optional AI polish via Apple's on-device

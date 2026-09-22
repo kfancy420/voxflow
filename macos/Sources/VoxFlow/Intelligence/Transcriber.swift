@@ -356,37 +356,55 @@ actor Transcriber {
         return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
     }
 
-    /// Joins whisper's segments. Whisper starts every segment capitalised,
-    /// and on fast speech it sometimes ends the previous one with no
-    /// punctuation ("…finish your work" + "You keep stopping…"): the capital
-    /// is whisper's own signal that a sentence ended there, so the missing
-    /// full stop is restored — provisionally. "I" is always capitalised and
-    /// gets no break. Whisper's own punctuation is never touched.
-    private final class SegmentJoiner {
+    /// Joins whisper's segments into one transcript. A segment boundary is
+    /// where whisper paused its decoding — usually at a pause in speech — and
+    /// it starts every segment with a capital whether or not a sentence
+    /// begins there. That capital used to be read as a sentence end and
+    /// turned into a full stop; on fast speech the boundaries land
+    /// mid-phrase ("there was no negative" + "Consequences or anything"),
+    /// so it produced sentences that were never spoken. Pauses are no longer
+    /// a punctuation signal at all: segments are joined with a space, and
+    /// whisper's own punctuation is the only punctuation the raw transcript
+    /// carries. Sentence structure is decided afterwards, over the finished
+    /// take (`RunOnSplitter` and `PunctuationSanity`). Same rules as the
+    /// Windows build's `SegmentJoiner`; keep the two in step.
+    ///
+    /// The stray capital at an unpunctuated seam is lowered so the join reads
+    /// as one sentence, except where it is plainly not a seam artefact: the
+    /// pronoun I, an acronym, or the first word of a capitalised phrase
+    /// ("Wild Crazy 8s"), which whisper capitalised because it is a name.
+    final class SegmentJoiner {
         private var out = ""
-        private var breaks = 0
+        private var seams = 0
 
         func add(_ segmentText: String) {
-            let t = segmentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            var t = segmentText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !t.isEmpty else { return }
             if let last = out.last {
                 let punctuated = ".!?,;:…—-\"".contains(last)
-                let capital = t.first?.isUppercase ?? false
-                let pronounI = t == "I" || t.hasPrefix("I ") || t.hasPrefix("I'")
-                // Inserted as a provisional marker, not a period: the sanity
-                // pass holds inferred breaks to a stricter standard than
-                // whisper's own punctuation and turns the survivors into '.'.
-                if !punctuated, capital, !pronounI {
-                    out.append(PunctuationSanity.inferredBreak)
-                    breaks += 1
+                if !punctuated {
+                    seams += 1
+                    t = Self.lowerSeamCapital(t)
                 }
                 out.append(" ")
             }
             out.append(t)
         }
 
+        private static func lowerSeamCapital(_ t: String) -> String {
+            guard let first = t.first, first.isUppercase else { return t }
+            let words = t.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard let head = words.first else { return t }
+            let word = head.trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:"))
+            if word == "I" || word.hasPrefix("I'") { return t }
+            if word.count > 1, word.uppercased() == word { return t } // acronym
+            // Next word also capitalised: a name phrase, not a seam artefact.
+            if words.count > 1, let next = words[1].first, next.isUppercase { return t }
+            return first.lowercased() + t.dropFirst()
+        }
+
         func finish() -> String {
-            if breaks > 0 { Log.info("Provisional sentence breaks at segment boundaries: \(breaks)") }
+            if seams > 0 { Log.info("Segment seams joined without a break: \(seams)") }
             return out
         }
     }

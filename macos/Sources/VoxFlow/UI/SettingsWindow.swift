@@ -5,6 +5,13 @@ import AVFoundation
 import ApplicationServices
 import os
 
+// View state lives in small ObservableObject holders rather than `@State`.
+// On the macOS 26/27 SDKs `@State` is a macro whose plugin
+// (libSwiftUIMacros.dylib) ships only inside Xcode, so a Mac with just the
+// Command Line Tools — the documented one-command install — cannot compile
+// it. `@ObservedObject` / `@Published` are plain property wrappers and build
+// everywhere.
+
 // MARK: - WindowManager
 
 /// Lazily creates and shows the Settings and History windows. Windows are
@@ -104,14 +111,32 @@ struct SettingsView: View {
 // MARK: - General tab
 
 private struct GeneralSettingsTab: View {
-    @State private var cleanupMode: CleanupMode = Preferences.shared.cleanupMode
-    @State private var playSounds: Bool = Preferences.shared.playSounds
-    @State private var insertTrailingSpace: Bool = Preferences.shared.insertTrailingSpace
-    @State private var launchAtLogin: Bool = Preferences.shared.launchAtLogin
-    @State private var historyRetentionHours: Int = Preferences.shared.historyRetentionHours
+    @MainActor
+    private final class Model: ObservableObject {
+        @Published var cleanupMode: CleanupMode = Preferences.shared.cleanupMode
+        @Published var playSounds: Bool = Preferences.shared.playSounds
+        @Published var insertTrailingSpace: Bool = Preferences.shared.insertTrailingSpace
+        @Published var launchAtLogin: Bool = Preferences.shared.launchAtLogin
+        @Published var historyRetentionHours: Int = Preferences.shared.historyRetentionHours
 
-    @State private var micStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-    @State private var accessibilityGranted: Bool = AXIsProcessTrusted()
+        @Published var micStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        @Published var accessibilityGranted: Bool = AXIsProcessTrusted()
+
+        func reloadPreferences() {
+            cleanupMode = Preferences.shared.cleanupMode
+            playSounds = Preferences.shared.playSounds
+            insertTrailingSpace = Preferences.shared.insertTrailingSpace
+            launchAtLogin = Preferences.shared.launchAtLogin
+            historyRetentionHours = Preferences.shared.historyRetentionHours
+        }
+
+        func reloadPermissions() {
+            micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+            accessibilityGranted = AXIsProcessTrusted()
+        }
+    }
+
+    @ObservedObject private var model = Model()
 
     private let prefsChanged = NotificationCenter.default.publisher(for: .voxFlowPrefsChanged)
     private let permissionTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
@@ -119,40 +144,40 @@ private struct GeneralSettingsTab: View {
     var body: some View {
         Form {
             Section {
-                Picker("Cleanup mode", selection: $cleanupMode) {
+                Picker("Cleanup mode", selection: $model.cleanupMode) {
                     Text("Off").tag(CleanupMode.off)
                     Text("Rules").tag(CleanupMode.rules)
                     Text("AI Polish").tag(CleanupMode.ai)
                 }
-                .onChange(of: cleanupMode) { _, newValue in
+                .onChange(of: model.cleanupMode) { _, newValue in
                     Preferences.shared.cleanupMode = newValue
                 }
 
-                Toggle("Play sounds", isOn: $playSounds)
-                    .onChange(of: playSounds) { _, newValue in
+                Toggle("Play sounds", isOn: $model.playSounds)
+                    .onChange(of: model.playSounds) { _, newValue in
                         Preferences.shared.playSounds = newValue
                     }
 
-                Toggle("Insert trailing space", isOn: $insertTrailingSpace)
-                    .onChange(of: insertTrailingSpace) { _, newValue in
+                Toggle("Insert trailing space", isOn: $model.insertTrailingSpace)
+                    .onChange(of: model.insertTrailingSpace) { _, newValue in
                         Preferences.shared.insertTrailingSpace = newValue
                     }
 
-                Toggle("Launch at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, newValue in
+                Toggle("Launch at login", isOn: $model.launchAtLogin)
+                    .onChange(of: model.launchAtLogin) { _, newValue in
                         Preferences.shared.launchAtLogin = newValue
                     }
             }
 
             Section("History") {
-                Picker("Keep dictations for", selection: $historyRetentionHours) {
+                Picker("Keep dictations for", selection: $model.historyRetentionHours) {
                     Text("1 hour").tag(1)
                     Text("24 hours").tag(24)
                     Text("7 days").tag(168)
                     Text("30 days").tag(720)
                     Text("Forever (200-entry cap)").tag(0)
                 }
-                .onChange(of: historyRetentionHours) { _, newValue in
+                .onChange(of: model.historyRetentionHours) { _, newValue in
                     Preferences.shared.historyRetentionHours = newValue
                 }
                 Text("Everything you dictate is stored in plain text in History, so it expires by default. Expiry runs at launch, after each dictation, and when History is opened.")
@@ -162,7 +187,7 @@ private struct GeneralSettingsTab: View {
 
             Section("Permissions") {
                 HStack {
-                    permissionDot(granted: micStatus == .authorized)
+                    permissionDot(granted: model.micStatus == .authorized)
                     Text("Microphone")
                     Spacer()
                     Button("Open System Settings") {
@@ -170,7 +195,7 @@ private struct GeneralSettingsTab: View {
                     }
                 }
                 HStack {
-                    permissionDot(granted: accessibilityGranted)
+                    permissionDot(granted: model.accessibilityGranted)
                     Text("Accessibility")
                     Spacer()
                     Button("Open System Settings") {
@@ -180,15 +205,10 @@ private struct GeneralSettingsTab: View {
             }
         }
         .onReceive(prefsChanged) { _ in
-            cleanupMode = Preferences.shared.cleanupMode
-            playSounds = Preferences.shared.playSounds
-            insertTrailingSpace = Preferences.shared.insertTrailingSpace
-            launchAtLogin = Preferences.shared.launchAtLogin
-            historyRetentionHours = Preferences.shared.historyRetentionHours
+            model.reloadPreferences()
         }
         .onReceive(permissionTimer) { _ in
-            micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-            accessibilityGranted = AXIsProcessTrusted()
+            model.reloadPermissions()
         }
         .padding(.top, 8)
     }
@@ -210,20 +230,29 @@ private struct GeneralSettingsTab: View {
 // MARK: - Model tab
 
 private struct ModelSettingsTab: View {
+    @MainActor
+    private final class Model: ObservableObject {
+        @Published var modelChoice: WhisperModelChoice = Preferences.shared.modelChoice
+    }
+
     @ObservedObject var statusRelay: StatusRelay
-    @State private var modelChoice: WhisperModelChoice = Preferences.shared.modelChoice
+    @ObservedObject private var model = Model()
 
     private let prefsChanged = NotificationCenter.default.publisher(for: .voxFlowPrefsChanged)
+
+    init(statusRelay: StatusRelay) {
+        self.statusRelay = statusRelay
+    }
 
     var body: some View {
         Form {
             Section {
-                Picker("Whisper model", selection: $modelChoice) {
+                Picker("Whisper model", selection: $model.modelChoice) {
                     ForEach(WhisperModelChoice.allCases, id: \.self) { choice in
                         Text(choice.isDownloaded ? choice.displayName : choice.displayName + " — not downloaded").tag(choice)
                     }
                 }
-                .onChange(of: modelChoice) { _, newValue in
+                .onChange(of: model.modelChoice) { _, newValue in
                     Preferences.shared.modelChoice = newValue
                 }
 
@@ -239,7 +268,7 @@ private struct ModelSettingsTab: View {
             }
         }
         .onReceive(prefsChanged) { _ in
-            modelChoice = Preferences.shared.modelChoice
+            model.modelChoice = Preferences.shared.modelChoice
         }
         .padding(.top, 8)
     }
@@ -248,14 +277,19 @@ private struct ModelSettingsTab: View {
 // MARK: - Dictionary tab
 
 private struct DictionarySettingsTab: View {
-    @State private var entries: [DictionaryEntry] = PersonalDictionary.shared.entries
+    @MainActor
+    private final class Model: ObservableObject {
+        @Published var entries: [DictionaryEntry] = PersonalDictionary.shared.entries
+    }
+
+    @ObservedObject private var model = Model()
 
     private let prefsChanged = NotificationCenter.default.publisher(for: .voxFlowPrefsChanged)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             List {
-                ForEach(entries) { entry in
+                ForEach(model.entries) { entry in
                     DictionaryRow(
                         entry: entry,
                         onChange: { updated in
@@ -290,7 +324,7 @@ private struct DictionarySettingsTab: View {
     }
 
     private func refresh() {
-        entries = PersonalDictionary.shared.entries
+        model.entries = PersonalDictionary.shared.entries
     }
 }
 
@@ -299,22 +333,31 @@ private struct DictionaryRow: View {
     let onChange: (DictionaryEntry) -> Void
     let onDelete: () -> Void
 
-    @State private var trigger: String
-    @State private var replacement: String
-    @State private var caseInsensitive: Bool
+    @MainActor
+    private final class Model: ObservableObject {
+        @Published var trigger: String
+        @Published var replacement: String
+        @Published var caseInsensitive: Bool
+
+        init(entry: DictionaryEntry) {
+            trigger = entry.trigger
+            replacement = entry.replacement
+            caseInsensitive = entry.caseInsensitive
+        }
+    }
+
+    @ObservedObject private var model: Model
 
     init(entry: DictionaryEntry, onChange: @escaping (DictionaryEntry) -> Void, onDelete: @escaping () -> Void) {
         self.entry = entry
         self.onChange = onChange
         self.onDelete = onDelete
-        _trigger = State(initialValue: entry.trigger)
-        _replacement = State(initialValue: entry.replacement)
-        _caseInsensitive = State(initialValue: entry.caseInsensitive)
+        self.model = Model(entry: entry)
     }
 
     var body: some View {
         HStack {
-            TextField("Trigger", text: $trigger)
+            TextField("Trigger", text: $model.trigger)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 100)
                 .onSubmit { commit() }
@@ -322,15 +365,15 @@ private struct DictionaryRow: View {
             Image(systemName: "arrow.right")
                 .foregroundColor(.secondary)
 
-            TextField("Replacement", text: $replacement)
+            TextField("Replacement", text: $model.replacement)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 120)
                 .onSubmit { commit() }
 
-            Toggle("Aa", isOn: $caseInsensitive)
+            Toggle("Aa", isOn: $model.caseInsensitive)
                 .toggleStyle(.checkbox)
                 .help("Case-insensitive match")
-                .onChange(of: caseInsensitive) { _, _ in commit() }
+                .onChange(of: model.caseInsensitive) { _, _ in commit() }
 
             Button {
                 onDelete()
@@ -339,15 +382,20 @@ private struct DictionaryRow: View {
             }
             .buttonStyle(.plain)
         }
-        .onChange(of: trigger) { _, _ in commit() }
-        .onChange(of: replacement) { _, _ in commit() }
+        .onChange(of: model.trigger) { _, _ in commit() }
+        .onChange(of: model.replacement) { _, _ in commit() }
     }
 
     private func commit() {
         var updated = entry
-        updated.trigger = trigger
-        updated.replacement = replacement
-        updated.caseInsensitive = caseInsensitive
+        updated.trigger = model.trigger
+        updated.replacement = model.replacement
+        updated.caseInsensitive = model.caseInsensitive
+        if updated.trigger == entry.trigger,
+           updated.replacement == entry.replacement,
+           updated.caseInsensitive == entry.caseInsensitive {
+            return
+        }
         onChange(updated)
     }
 }

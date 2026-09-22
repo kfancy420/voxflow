@@ -110,6 +110,13 @@ dictation goes to the wrong app, click into the right text field first
   permission state, model loads, every recording, transcription timings
   (`LATENCY release→text …`), insertion results, faults and recoveries.
 - **Rebuild after editing code** — `bash scripts/install.sh` again.
+- **Build fails with `plugin for module 'SwiftUIMacros' not found`** —
+  the SwiftUI files use no `@State`-style macros for exactly this reason
+  (the macro plugin ships only inside Xcode, and the install path needs
+  only the Command Line Tools). If it comes back after an edit, keep view
+  state in an `ObservableObject` with `@Published` properties as the
+  existing windows do; CI (`.github/workflows/macos-build.yml`) builds
+  with the Command Line Tools alone to catch it.
 
 Headless checks, useful when tuning cleanup rules or when the pipeline
 seems dead:
@@ -130,7 +137,8 @@ Single SwiftPM executable target. `Sources/VoxFlow/`:
 - `Intelligence/` — `Transcriber` (WhisperKit actor: silence guard,
   segment joiner, watchdog), `TextCleaner` (rules pipeline +
   FoundationModels polish), `PunctuationSanity` + `RunOnSplitter`
-  (sentence-break inference, shared rules with Windows),
+  (run-on splitting and false-break removal over the finished take —
+  pauses are never a punctuation signal; shared rules with Windows),
   `PersonalDictionary`, `HistoryStore` (JSON in Application Support,
   time-based expiry), `TakeVault` (pending take on disk).
 - `UI/` — `StatusBarController`, `HUDController` (non-activating

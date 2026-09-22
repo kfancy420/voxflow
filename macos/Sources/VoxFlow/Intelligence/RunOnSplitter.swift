@@ -126,6 +126,14 @@ enum RunOnSplitter {
         return false
     }
 
+    private static let purposePronouns: Set<String> = [
+        "i", "we", "you", "they", "he", "she", "it", "people", "users", "players",
+    ]
+    private static let purposeModals: Set<String> = [
+        "can", "could", "would", "will", "won't", "don't", "doesn't", "didn't", "can't", "couldn't",
+        "wouldn't", "may", "might", "have", "has", "get", "gets", "know", "knows", "see", "sees",
+    ]
+
     private static func isSentenceStart(_ words: [String], _ i: Int) -> Bool {
         let w = PunctuationSanity.core(words[i])
         let prev = PunctuationSanity.core(words[i - 1]).lowercased()
@@ -140,7 +148,14 @@ enum RunOnSplitter {
             if noBreakBeforeSo.contains(prev) { return false }
             if i + 1 >= words.count { return false }
             let next = PunctuationSanity.core(words[i + 1]).lowercased()
-            return !noBreakAfterSo.contains(next) && i + 3 < words.count // "so" must open a clause
+            if noBreakAfterSo.contains(next) || i + 3 >= words.count { return false } // "so" must open a clause
+            // "…as quickly as possible so they can file it": a purpose clause
+            // (so + pronoun + modal), not a new sentence.
+            if purposePronouns.contains(next),
+               purposeModals.contains(PunctuationSanity.core(words[i + 2]).lowercased()) {
+                return false
+            }
+            return true
         }
 
         if questionWords.contains(lw) {

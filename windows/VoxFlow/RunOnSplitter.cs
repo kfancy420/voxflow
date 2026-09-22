@@ -46,6 +46,16 @@ public static class RunOnSplitter
         "was", "were", "little", "few", "often", "slow", "fast", "hard", "easy", "well", "close",
     };
 
+    private static readonly HashSet<string> PurposePronouns = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "i", "we", "you", "they", "he", "she", "it", "people", "users", "players",
+    };
+    private static readonly HashSet<string> PurposeModals = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "can", "could", "would", "will", "won't", "don't", "doesn't", "didn't", "can't", "couldn't",
+        "wouldn't", "may", "might", "have", "has", "get", "gets", "know", "knows", "see", "sees",
+    };
+
     // "I know why…", "no matter what…": the question word is not opening a question.
     private static readonly HashSet<string> NoBreakBeforeQuestion = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -148,7 +158,11 @@ public static class RunOnSplitter
             if (NoBreakBeforeSo.Contains(prev)) return false;
             if (i + 1 >= words.Length) return false;
             string next = Core(words[i + 1]);
-            return !NoBreakAfterSo.Contains(next) && i + 3 < words.Length; // "so" must open a clause
+            if (NoBreakAfterSo.Contains(next) || i + 3 >= words.Length) return false; // "so" must open a clause
+            // "…as quickly as possible so they can file it": a purpose clause
+            // (so + pronoun + modal), not a new sentence.
+            if (PurposePronouns.Contains(next) && PurposeModals.Contains(Core(words[i + 2]))) return false;
+            return true;
         }
 
         if (QuestionWords.Contains(w))

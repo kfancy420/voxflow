@@ -1,0 +1,52 @@
+name: macOS build
+
+# Proves the one-command install works on a Mac that has ONLY the Xcode
+# Command Line Tools (what `xcode-select --install` gives a fresh machine),
+# not the full Xcode.app. The two differ: the CLT lacks some Xcode-only
+# compiler plugins (SwiftUI's macro library, for one), so a build that only
+# passes under Xcode can still fail for every user following the README.
+#
+# xcode-27 is the runner image whose Command Line Tools match a Mac on the
+# current macOS; macos-26 covers the previous release.
+
+on:
+  push:
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos-build.yml"
+  pull_request:
+    paths:
+      - "macos/**"
+  workflow_dispatch:
+
+jobs:
+  clt-only:
+    name: swift build with Command Line Tools only (${{ matrix.image }})
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [xcode-27, macos-26]
+    runs-on: ${{ matrix.image }}
+    defaults:
+      run:
+        working-directory: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the Command Line Tools, not Xcode
+        run: |
+          sudo xcode-select -s /Library/Developer/CommandLineTools
+          xcode-select -p
+          swift --version
+          xcrun --show-sdk-version
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Assemble app bundle
+        run: bash scripts/make_app.sh
+
+      - name: Check bundle
+        run: |
+          test -x build/VoxFlow.app/Contents/MacOS/VoxFlow
+          ls build/VoxFlow.app/Contents/Resources

@@ -422,40 +422,66 @@ public sealed class Transcriber : IDisposable
     }
 
     /// <summary>
-    /// Joins whisper's segments. Whisper starts every segment capitalised,
-    /// and on fast speech it sometimes ends the previous one with no
-    /// punctuation ("…finish your work" + "You keep stopping…"): the capital
-    /// is whisper's own signal that a sentence ended there, so the missing
-    /// full stop is restored. "I" is always capitalised and gets no break.
-    /// Whisper's own punctuation is never touched.
+    /// Joins whisper's segments into one transcript. A segment boundary is
+    /// where whisper paused its decoding — usually at a pause in speech — and
+    /// it starts every segment with a capital whether or not a sentence
+    /// begins there. That capital used to be read as a sentence end and
+    /// turned into a full stop; on fast speech the boundaries land
+    /// mid-phrase ("there was no negative" + "Consequences or anything"),
+    /// so it produced sentences that were never spoken. Pauses are no longer
+    /// a punctuation signal at all: segments are joined with a space, and
+    /// whisper's own punctuation is the only punctuation the raw transcript
+    /// carries. Sentence structure is decided afterwards, over the finished
+    /// take (<see cref="RunOnSplitter"/> and <see cref="PunctuationSanity"/>).
+    ///
+    /// The stray capital at an unpunctuated seam is lowered so the join reads
+    /// as one sentence, except where it is plainly not a seam artefact: the
+    /// pronoun I, an acronym, or the first word of a capitalised phrase
+    /// ("Wild Crazy 8s"), which whisper capitalised because it is a name.
     /// </summary>
-    private sealed class SegmentJoiner
+    internal sealed class SegmentJoiner
     {
         private readonly StringBuilder _sb = new();
-        private int _breaks;
+        private int _seams;
 
-        public void Add(SegmentData segment)
+        public void Add(SegmentData segment) => Add(segment.Text);
+
+        public void Add(string segmentText)
         {
-            string t = segment.Text.Trim();
+            string t = segmentText.Trim();
             if (t.Length == 0) return;
             if (_sb.Length > 0)
             {
                 char last = _sb[^1];
                 bool punctuated = last is '.' or '!' or '?' or ',' or ';' or ':' or '…' or '—' or '-' or '"';
-                bool capital = char.IsUpper(t[0]);
-                bool pronounI = t == "I" || t.StartsWith("I ", StringComparison.Ordinal) || t.StartsWith("I'", StringComparison.Ordinal);
-                // Inserted as a provisional marker, not a period: the sanity
-                // pass holds inferred breaks to a stricter standard than
-                // whisper's own punctuation and turns the survivors into '.'.
-                if (!punctuated && capital && !pronounI) { _sb.Append(PunctuationSanity.InferredBreak); _breaks++; }
+                if (!punctuated)
+                {
+                    _seams++;
+                    t = LowerSeamCapital(t);
+                }
                 _sb.Append(' ');
             }
             _sb.Append(t);
         }
 
+        private static string LowerSeamCapital(string t)
+        {
+            if (!char.IsUpper(t[0])) return t;
+            int end = 0;
+            while (end < t.Length && !char.IsWhiteSpace(t[end])) end++;
+            string word = t.Substring(0, end).TrimEnd('.', ',', '!', '?', ';', ':');
+            if (word == "I" || word.StartsWith("I'", StringComparison.Ordinal)) return t;
+            if (word.Length > 1 && word.ToUpperInvariant() == word) return t; // acronym
+            // Next word also capitalised: a name phrase, not a seam artefact.
+            int next = end;
+            while (next < t.Length && char.IsWhiteSpace(t[next])) next++;
+            if (next < t.Length && char.IsUpper(t[next])) return t;
+            return char.ToLowerInvariant(t[0]) + t.Substring(1);
+        }
+
         public string Finish()
         {
-            if (_breaks > 0) Log.Info($"Provisional sentence breaks at segment boundaries: {_breaks}");
+            if (_seams > 0) Log.Info($"Segment seams joined without a break: {_seams}");
             return _sb.ToString();
         }
     }

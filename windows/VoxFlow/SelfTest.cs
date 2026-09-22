@@ -49,6 +49,18 @@ internal static class SelfTest
                     report.AppendLine("CLEANED : " + TextCleaner.Clean(
                         PersonalDictionary.Apply(ListSanity.Apply(QuoteSanity.Apply(File.ReadAllText(args[1]))))));
                     break;
+                case "--selftest-join":
+                    // Joins one whisper segment per line the way a live take
+                    // is joined, then runs the cleanup pipeline on the result.
+                    // Proves how segment seams (pauses) are handled without
+                    // needing audio.
+                    report.AppendLine("MODE --selftest-join " + args[1]);
+                    var joiner = new Transcriber.SegmentJoiner();
+                    foreach (var line in File.ReadAllLines(args[1])) joiner.Add(line);
+                    string joined = PunctuationSanity.Apply(ListSanity.Apply(QuoteSanity.Apply(joiner.Finish())));
+                    report.AppendLine("JOINED  : " + joined);
+                    report.AppendLine("CLEANED : " + TextCleaner.Clean(PersonalDictionary.Apply(joined)));
+                    break;
                 case "--selftest-insert":
                     exitCode = InsertText(args.Length > 1 ? args[1] : "VoxFlow insertion test", report);
                     break;

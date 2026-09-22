@@ -3,26 +3,38 @@ import SwiftUI
 import Combine
 import os
 
+// View state lives in small ObservableObject holders rather than `@State`.
+// On the macOS 26/27 SDKs `@State` is a macro whose plugin
+// (libSwiftUIMacros.dylib) ships only inside Xcode, so a Mac with just the
+// Command Line Tools — the documented one-command install — cannot compile
+// it. `@ObservedObject` / `@Published` are plain property wrappers and build
+// everywhere.
+
 /// SwiftUI view listing past dictations from `HistoryStore.shared`. Hosted
 /// inside an NSWindow by `WindowManager`.
 struct HistoryView: View {
     private static let logger = os.Logger(subsystem: "com.voxflow.app", category: "HistoryWindow")
 
-    @State private var entries: [HistoryEntry] = HistoryStore.shared.entries
-    @State private var showingClearConfirm = false
+    @MainActor
+    private final class Model: ObservableObject {
+        @Published var entries: [HistoryEntry] = HistoryStore.shared.entries
+        @Published var showingClearConfirm = false
+    }
+
+    @ObservedObject private var model = Model()
 
     private let prefsChanged = NotificationCenter.default.publisher(for: .voxFlowPrefsChanged)
 
     var body: some View {
         VStack(spacing: 0) {
-            if entries.isEmpty {
+            if model.entries.isEmpty {
                 Spacer()
                 Text("No dictations yet")
                     .foregroundColor(.secondary)
                 Spacer()
             } else {
                 List {
-                    ForEach(entries) { entry in
+                    ForEach(model.entries) { entry in
                         HistoryRow(entry: entry)
                     }
                 }
@@ -32,21 +44,21 @@ struct HistoryView: View {
             Divider()
 
             HStack {
-                Text("\(entries.count) item\(entries.count == 1 ? "" : "s") · expires after \(HistoryStore.shared.retentionDescription)")
+                Text("\(model.entries.count) item\(model.entries.count == 1 ? "" : "s") · expires after \(HistoryStore.shared.retentionDescription)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
                 Button("Clear History") {
-                    showingClearConfirm = true
+                    model.showingClearConfirm = true
                 }
-                .disabled(entries.isEmpty)
+                .disabled(model.entries.isEmpty)
             }
             .padding(12)
         }
         .frame(minWidth: 460, minHeight: 400)
         .onAppear { refresh() }
         .onReceive(prefsChanged) { _ in refresh() }
-        .alert("Clear History?", isPresented: $showingClearConfirm) {
+        .alert("Clear History?", isPresented: $model.showingClearConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Clear", role: .destructive) {
                 HistoryStore.shared.clear()
@@ -58,22 +70,31 @@ struct HistoryView: View {
     }
 
     private func refresh() {
-        entries = HistoryStore.shared.entries
+        model.entries = HistoryStore.shared.entries
     }
 }
 
 private struct HistoryRow: View {
     let entry: HistoryEntry
 
-    @State private var expanded = false
-    @State private var showRaw = false
-    @State private var copied = false
+    @MainActor
+    private final class Model: ObservableObject {
+        @Published var expanded = false
+        @Published var showRaw = false
+        @Published var copied = false
+    }
+
+    @ObservedObject private var model = Model()
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter
     }()
+
+    init(entry: HistoryEntry) {
+        self.entry = entry
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -94,7 +115,7 @@ private struct HistoryRow: View {
                 Button {
                     copy()
                 } label: {
-                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    Label(model.copied ? "Copied" : "Copy", systemImage: model.copied ? "checkmark" : "doc.on.doc")
                         .font(.caption)
                 }
                 .buttonStyle(.borderless)
@@ -102,12 +123,12 @@ private struct HistoryRow: View {
 
             Text(entry.cleanedText)
                 .font(.body)
-                .lineLimit(expanded ? nil : 3)
+                .lineLimit(model.expanded ? nil : 3)
                 .onTapGesture {
-                    expanded.toggle()
+                    model.expanded.toggle()
                 }
 
-            DisclosureGroup(isExpanded: $showRaw) {
+            DisclosureGroup(isExpanded: $model.showRaw) {
                 Text(entry.rawText)
                     .font(.callout)
                     .foregroundColor(.secondary)
@@ -126,10 +147,11 @@ private struct HistoryRow: View {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(entry.cleanedText, forType: .string)
-        copied = true
+        model.copied = true
+        let model = self.model
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             MainActor.assumeIsolated {
-                copied = false
+                model.copied = false
             }
         }
     }
