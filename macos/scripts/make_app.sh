@@ -38,7 +38,9 @@ shopt -u nullglob
 echo "==> Code signing..."
 # Prefer a stable identity (TCC permission grants survive rebuilds);
 # fall back to ad-hoc if none is available.
-IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | grep -o '"Apple Development[^"]*"' | head -1 | tr -d '"')"
+# A Mac with no developer certificate (any fresh install) makes `grep` exit
+# non-zero, which under `pipefail` used to abort the whole script right here.
+IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | grep -o '"Apple Development[^"]*"' | head -1 | tr -d '"' || true)"
 if [[ -n "${IDENTITY}" ]]; then
   echo "    signing as: ${IDENTITY}"
   codesign --force --sign "${IDENTITY}" "${APP}"
